@@ -9,8 +9,10 @@ PKG_MAINTAINER:=netdevices
 
 LUCI_TITLE:=LuCI support for Online Devices (IPv4/IPv6/MAC/uptime/static lease/kick/limit/traffic)
 LUCI_PKGARCH:=all
-# jsonfilter: 解析 ubus 参数　tc/kmod-*: 限速与流量统计　ebtables/nft: 封锁
-LUCI_DEPENDS:=+luci-base +jsonfilter +tc +kmod-ifb +kmod-sch-htb +kmod-cls-u32 +ip-full
+# 注意：**不能**写 +kmod-sch-htb / +kmod-cls-u32 —— 它们在多数目标上是
+#   CONFIG_NET_SCH_HTB=y / CONFIG_NET_CLS_U32=y 编进内核的，不生成独立包，
+#   硬依赖会直接报 “no such package” 装不上。改由运行时探测，UI 里给安装指引。
+LUCI_DEPENDS:=+luci-base +jsonfilter +tc +ip-full
 
 include $(TOPDIR)/feeds/luci/luci.mk
 

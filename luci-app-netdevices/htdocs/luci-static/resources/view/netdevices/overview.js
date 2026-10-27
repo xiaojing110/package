@@ -12,6 +12,7 @@ var callSetLimit    = rpc.declare({ object: 'netdevices', method: 'set_limit',  
 var callRemoveLimit = rpc.declare({ object: 'netdevices', method: 'remove_limit',   params: ['mac'],                      expect: { 'result': true } });
 var callSetFlags    = rpc.declare({ object: 'netdevices', method: 'set_flags',      params: ['traffic', 'app_usage'],     expect: { 'result': true } });
 var callAppUsage    = rpc.declare({ object: 'netdevices', method: 'app_usage',      params: ['mac', 'ip'],                expect: { 'result': [] } });
+var callCaps        = rpc.declare({ object: 'netdevices', method: 'caps',           expect: { 'result': {} } });
 var callHelp        = rpc.declare({ object: 'netdevices', method: 'help',           expect: { 'result': {} } });
 
 var autoTimer = null;
@@ -341,6 +342,52 @@ function renderTable(data, flags, reload) {
 	]);
 }
 
+/* ---------------- 运行环境检测 ---------------- */
+function renderCaps(c) {
+	if (!c) return null;
+	function row(ok, label, hint) {
+		return E('div', { 'style': 'display:flex;align-items:center;gap:8px;padding:3px 0' }, [
+			E('span', { 'style': 'font-size:15px;width:18px;text-align:center' }, [ok ? '✅' : '⚠️']),
+			E('span', { 'style': 'min-width:150px' }, [label]),
+			hint ? E('span', { 'class': 'nd-muted' }, [hint]) : null
+		]);
+	}
+	var need = [];
+	if (!c.tc) need.push('tc');
+	if (!c.htb) need.push('kmod-sch-htb');
+	if (!c.u32) need.push('kmod-cls-u32');
+	if (!c.ifb) need.push('kmod-ifb');
+	if (!c.nft && !c.iptables) need.push('iptables-nft');
+
+	return E('div', { 'class': 'nd-section' }, [
+		E('h3', {}, [_('🔧 运行环境检测')]),
+		E('div', { 'class': 'body' }, [
+			E('div', { 'class': 'nd-muted', 'style': 'margin-bottom:8px' }, [
+				_('以下组件决定各项功能是否可用；缺少的会给出安装命令。')
+			]),
+			row(c.tc, 'tc', _('限速 / 流量统计必需')),
+			row(c.htb, 'HTB (sch_htb)', _('限速算法。多数目标已编入内核，无需单独安装')),
+			row(c.u32, 'u32 (cls_u32)', _('按 MAC 匹配。多数目标已编入内核')),
+			row(c.ifb, 'ifb0', _('下行限速需要。可用时自动创建')),
+			row(c.nft || c.iptables, _('防火墙 (nftables / iptables)'), _('踢下线封锁必需')),
+			row(c.iw, 'iw', _('WiFi 去关联（踢下线时用）')),
+			row(c.dhcp_release, 'dhcp_release', _('踢下线时立刻释放租约')),
+			need.length ? E('div', {
+				'style': 'margin-top:12px;padding:10px 12px;background:#fffaf0;border:1px solid #f6ad55;border-radius:6px'
+			}, [
+				E('b', {}, [_('缺少以下组件：') + need.join(' ')]),
+				E('div', { 'style': 'margin-top:6px' }, [
+					E('code', {
+						'style': 'display:inline-block;padding:3px 8px;background:#fed7d7;border-radius:4px'
+					}, ['opkg install ' + need.join(' ')])
+				])
+			]) : E('div', {
+				'style': 'margin-top:12px;padding:8px 12px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px'
+			}, [_('✅ 环境完整，所有功能可用')])
+		])
+	]);
+}
+
 /* ---------------- 实验功能开关 ---------------- */
 function renderFlags(flags, reload) {
 	function sw(key, label, desc) {
@@ -390,9 +437,10 @@ function renderHelp(h) {
 /* ---------------- 主视图 ---------------- */
 var rootEl = null;
 
-function renderAll(data, flags, help) {
+function renderAll(data, flags, help, caps) {
 	var el = E('div', {}, [
 		renderTable(data, flags, load),
+		renderCaps(caps),
 		renderFlags(flags, load),
 		renderHelp(help)
 	]);
@@ -403,12 +451,14 @@ function renderAll(data, flags, help) {
 function load() {
 	return Promise.all([
 		callStatus().catch(function () { return {}; }),
-		callHelp().catch(function () { return {}; })
+		callHelp().catch(function () { return {}; }),
+		callCaps().catch(function () { return {}; })
 	]).then(function (r) {
 		var st = r[0] || {};
 		var data = st.result || (Array.isArray(st) ? st : []);
 		var flags = st.flags || {};
-		renderAll(data, flags, r[1] && r[1].result ? r[1].result : r[1]);
+		renderAll(data, flags, r[1] && r[1].result ? r[1].result : r[1],
+		          r[2] && r[2].result ? r[2].result : r[2]);
 	}).catch(function (e) {
 		var msg = (e && e.message) ? e.message : String(e);
 		var isObj = /Object not found|-32000/i.test(msg);

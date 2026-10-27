@@ -293,6 +293,59 @@ app_dump() {
 	' /proc/net/nf_conntrack 2>/dev/null
 }
 
+# ---- 运行环境探测 ----
+# kmod-sch-htb / kmod-cls-u32 多数目标编内联，装不上也不该阻断安装，
+# 所以改成探测 + 在 UI 里给安装指引。
+mod_present() {
+	local n="$1" k sym
+	# 1) 已加载（含带参数的内联模块）
+	[ -d "/sys/module/${n}" ] && return 0
+	# 2) 作为模块文件存在
+	for k in /lib/modules/*; do
+		[ -e "$k/${n}.ko" ] && return 0
+		[ -e "$k/${n}.ko.xz" ] && return 0
+		[ -e "$k/${n}.ko.gz" ] && return 0
+	done
+	# 3) **编内联**（built-in）——既不在 /sys/module 也没 .ko，
+	#    只能从内核配置里看；sch_htb → CONFIG_NET_SCH_HTB=y
+	if [ -r /proc/config.gz ]; then
+		sym=$(printf '%s' "$n" | tr 'a-z-' 'A-Z_')
+		zcat /proc/config.gz 2>/dev/null | grep -qE "^CONFIG_(NET_)?${sym}=[ym]" && return 0
+	fi
+	return 1
+}
+
+do_caps() {
+	local c_tc=0 c_ifb=0 c_htb=0 c_u32=0 c_nft=0 c_ipt=0 c_iw=0 c_dhcp=0
+	command -v tc        >/dev/null 2>&1 && c_tc=1
+	command -v nft       >/dev/null 2>&1 && c_nft=1
+	command -v iptables  >/dev/null 2>&1 && c_ipt=1
+	command -v iw        >/dev/null 2>&1 && c_iw=1
+	command -v dhcp_release >/dev/null 2>&1 && c_dhcp=1
+	command -v ip        >/dev/null 2>&1 && {
+		ip link show ifb0 >/dev/null 2>&1 && c_ifb=1
+	}
+	mod_present sch_htb && c_htb=1
+	mod_present cls_u32 && c_u32=1
+
+	# 缺什么就给安装命令
+	missing=""
+	[ "$c_tc" = 0 ]  && missing="$missing tc"
+	[ "$c_htb" = 0 ] && missing="$missing kmod-sch-htb"
+	[ "$c_u32" = 0 ] && missing="$missing kmod-cls-u32"
+	[ "$c_ifb" = 0 ]  && missing="$missing kmod-ifb"
+	[ "$c_ipt" = 0 ] && [ "$c_nft" = 0 ] && missing="$missing iptables-nft"
+	missing=$(printf '%s' "$missing" | sed 's/^ *//')
+
+	printf '{"result":{"tc":%s,"ifb":%s,"htb":%s,"u32":%s,"nft":%s,"iptables":%s,"iw":%s,"dhcp_release":%s,"limit_ready":%s,"ban_ready":%s,"missing":"%s","install_hint":"opkg install %s"}}' \
+		"$c_tc" "$c_ifb" "$c_htb" "$c_u32" "$c_nft" "$c_ipt" "$c_iw" "$c_dhcp" \
+		"$([ "$c_tc" = 1 ] && [ "$c_htb" = 1 ] && [ "$c_u32" = 1 ] && echo true || echo false)" \
+		"$([ "$c_nft" = 1 ] || [ "$c_ipt" = 1 ] && echo true || echo false)" \
+		"$(json_str "$missing")" "$(json_str "$missing")"
+}
+
+# 修正 install_hint 的空格（missing 已去前导空格，这里补上）
+
 # ==================== rpcd 方法 ====================
 
 do_status() {
@@ -497,7 +550,9 @@ do_set_limit() {
 	local mac down up
 	mac=$(lower "$1"); down="$2"; up="$3"
 	valid_mac "$mac" || { printf '{"error":"invalid mac"}'; return; }
-	command -v tc >/dev/null 2>&1 || { printf '{"error":"tc not available (opkg install tc)"}'; return; }
+	command -v tc >/dev/null 2>&1 || { printf '{"error":"tc not available","install_hint":"opkg install tc"}'; return; }
+	mod_present sch_htb || { printf '{"error":"sch_htb not available (built-in or install kmod-sch-htb)","install_hint":"opkg install kmod-sch-htb"}'; return; }
+	mod_present cls_u32 || { printf '{"error":"cls_u32 not available (built-in or install kmod-cls-u32)","install_hint":"opkg install kmod-cls-u32"}'; return; }
 	limit_set "$mac" "$down" "$up"
 	printf '{"result":true,"mac":"%s","limit_down":%s,"limit_up":%s}' "$mac" "${down:-0}" "${up:-0}"
 }
@@ -609,6 +664,7 @@ case "$1" in
   "set_flags": { "traffic": "String", "app_usage": "String" },
   "flags": {},
   "app_usage": { "mac": "String", "ip": "String" },
+  "caps": {},
   "help": {}
 }
 EOF
@@ -639,6 +695,7 @@ EOF
 			set_flags)      do_set_flags     "$(jget traffic)" "$(jget app_usage)" ;;
 			flags)          do_flags ;;
 			app_usage)      do_app_usage     "$(jget mac)" "$(jget ip)" ;;
+			caps)           do_caps ;;
 			help)           do_help ;;
 			*)              printf '{"error":"unknown method"}' ;;
 		esac

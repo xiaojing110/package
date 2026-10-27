@@ -3,7 +3,7 @@
 		"description": "Grant access to Online Devices (netdevices)",
 		"read": {
 			"ubus": {
-				"netdevices": [ "status", "limits", "flags", "app_usage", "help" ]
+				"netdevices": [ "status", "limits", "flags", "app_usage", "caps", "help" ]
 			},
 			"uci": [ "dhcp" ]
 		},
