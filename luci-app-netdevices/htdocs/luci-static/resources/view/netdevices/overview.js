@@ -166,7 +166,7 @@ function doKick(d, reload) {
 	]), _('确认踢下线'), function () {
 		return callKick(d.mac, (d.ip4 || '').split(',')[0]).then(function (r) {
 			var bits = [];
-			if (r && r.ban === false) bits.push(_('防火墙规则失败（缺 nft/iptables）'));
+			if (r && r.ban === false) bits.push(_('防火墙规则失败（缺 nft/fw4）'));
 			if (r && r.wifi === false) bits.push(_('WiFi 去关联失败'));
 			notify(bits.length ? _('已处理，但：') + bits.join('；') : _('设备已踢下线'), bits.length ? false : true);
 			reload();
@@ -183,7 +183,7 @@ function doLimit(d, reload) {
 		inputRow(_('上行速率（Kbit/s）'), upEl, _('设备上传方向。0 或留空 = 不限速')),
 		E('div', { 'class': 'nd-muted' }, [
 			_('例：下行 2000、上行 500 = 下载 2Mbps / 上传 500Kbps'),
-			E('br'), _('依赖：opkg install tc kmod-ifb kmod-sch-htb kmod-cls-u32')
+			E('br'), _('限速基于内核 tc HTB/ifb；系统无 tc 时仅保存配置，不依赖额外软件包')
 		])
 	]), _('保存'), function () {
 		return callSetLimit(d.mac, downEl.value.trim() || '0', upEl.value.trim() || '0').then(function () {
@@ -352,38 +352,22 @@ function renderCaps(c) {
 			hint ? E('span', { 'class': 'nd-muted' }, [hint]) : null
 		]);
 	}
-	var need = [];
-	if (!c.tc) need.push('tc');
-	if (!c.htb) need.push('kmod-sch-htb');
-	if (!c.u32) need.push('kmod-cls-u32');
-	if (!c.ifb) need.push('kmod-ifb');
-	if (!c.nft && !c.iptables) need.push('iptables-nft');
-
+	/* 不检测/不提示安装任何包；仅展示运行状态 */
 	return E('div', { 'class': 'nd-section' }, [
 		E('h3', {}, [_('🔧 运行环境检测')]),
 		E('div', { 'class': 'body' }, [
 			E('div', { 'class': 'nd-muted', 'style': 'margin-bottom:8px' }, [
-				_('以下组件决定各项功能是否可用；缺少的会给出安装命令。')
+				_('仅报告状态，不依赖额外软件包。防火墙使用 fw4/nft；限速有 tc 则用。')
 			]),
-			row(c.tc, 'tc', _('限速 / 流量统计必需')),
-			row(c.htb, 'HTB (sch_htb)', _('限速算法。多数目标已编入内核，无需单独安装')),
-			row(c.u32, 'u32 (cls_u32)', _('按 MAC 匹配。多数目标已编入内核')),
-			row(c.ifb, 'ifb0', _('下行限速需要。可用时自动创建')),
-			row(c.nft || c.iptables, _('防火墙 (nftables / iptables)'), _('踢下线封锁必需')),
+			row(c.tc, 'tc', _('限速 / 流量统计（有则启用，无则降级）')),
+			row(true, 'HTB / u32', _('内核内置，无需安装')),
+			row(c.ifb, 'ifb0', _('下行限速（可用时自动创建）')),
+			row(c.nft || c.fw4, _('防火墙 fw4 / nftables'), _('踢下线封锁（无 iptables/fw3）')),
 			row(c.iw, 'iw', _('WiFi 去关联（踢下线时用）')),
 			row(c.dhcp_release, 'dhcp_release', _('踢下线时立刻释放租约')),
-			need.length ? E('div', {
-				'style': 'margin-top:12px;padding:10px 12px;background:#fffaf0;border:1px solid #f6ad55;border-radius:6px'
-			}, [
-				E('b', {}, [_('缺少以下组件：') + need.join(' ')]),
-				E('div', { 'style': 'margin-top:6px' }, [
-					E('code', {
-						'style': 'display:inline-block;padding:3px 8px;background:#fed7d7;border-radius:4px'
-					}, ['opkg install ' + need.join(' ')])
-				])
-			]) : E('div', {
+			E('div', {
 				'style': 'margin-top:12px;padding:8px 12px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px'
-			}, [_('✅ 环境完整，所有功能可用')])
+			}, [_('✅ 无需安装额外软件包，缺组件时功能自动降级')])
 		])
 	]);
 }

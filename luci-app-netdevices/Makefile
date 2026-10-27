@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-netdevices
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.0.1
 PKG_RELEASE:=1
 
 PKG_LICENSE:=MIT
@@ -9,14 +9,12 @@ PKG_MAINTAINER:=netdevices
 
 LUCI_TITLE:=LuCI support for Online Devices (IPv4/IPv6/MAC/uptime/static lease/kick/limit/traffic)
 LUCI_PKGARCH:=all
-# 注意：**不能**写 +kmod-sch-htb / +kmod-cls-u32 —— 它们在多数目标上是
-#   CONFIG_NET_SCH_HTB=y / CONFIG_NET_CLS_U32=y 编进内核的，不生成独立包，
-#   硬依赖会直接报 “no such package” 装不上。改由运行时探测，UI 里给安装指引。
-LUCI_DEPENDS:=+luci-base +jsonfilter +tc +ip-full
+# 不依赖 tc / kmod-ifb / iptables-nft / kmod-sch-htb / kmod-cls-u32。
+# 防火墙仅用 fw4(nft)；限速有 tc 则用，无则代码层降级。
+LUCI_DEPENDS:=+luci-base +jsonfilter
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
-# 安装后强制保证 rpcd 后端脚本可执行，并重新加载 rpcd
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
 [ -n "$${IPKG_INSTROOT}" ] || {

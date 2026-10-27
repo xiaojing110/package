@@ -99,8 +99,8 @@ msgstr "设备上传方向。0 或留空 = 不限速"
 msgid "例：下行 2000、上行 500 = 下载 2Mbps / 上传 500Kbps"
 msgstr "例：下行 2000、上行 500 = 下载 2Mbps / 上传 500Kbps"
 
-msgid "依赖：opkg install tc kmod-ifb kmod-sch-htb kmod-cls-u32"
-msgstr "依赖：opkg install tc kmod-ifb kmod-sch-htb kmod-cls-u32"
+msgid "限速基于内核 tc HTB/ifb；系统无 tc 时仅保存配置，不依赖额外软件包"
+msgstr "限速基于内核 tc HTB/ifb；系统无 tc 时仅保存配置，不依赖额外软件包"
 
 msgid "限速已生效"
 msgstr "限速已生效"

@@ -163,25 +163,29 @@ tc_bytes() {
 
 # ---------------- 封锁（踢掉设备）----------------
 nft_avail() { command -v nft >/dev/null 2>&1; }
-ipt_avail() { command -v iptables >/dev/null 2>&1; }
+
+# 仅 fw4 / nftables：独立表，不污染 fw4；无 iptables / fw3
+nft_ensure() {
+	nft_avail || return 1
+	nft list table inet netdevices >/dev/null 2>&1 || \
+		nft add table inet netdevices 2>/dev/null || return 1
+	nft list chain inet netdevices forward >/dev/null 2>&1 || \
+		nft add chain inet netdevices forward \
+			'{ type filter hook forward priority -10; policy accept; }' 2>/dev/null || return 1
+	return 0
+}
 
 ban_apply() {
 	local mac="$1"
-	# nftables 优先
-	if nft_avail; then
-		nft list table inet netdevices >/dev/null 2>&1 || nft add table inet netdevices 2>/dev/null
-		nft list chain inet netdevices forward >/dev/null 2>&1 || \
-			nft add chain inet netdevices forward '{ type filter hook forward priority -5; policy accept; }' 2>/dev/null
-		nft add rule inet netdevices forward ether saddr "$mac" drop 2>/dev/null || true
-		nft add rule inet netdevices forward ether daddr "$mac" drop 2>/dev/null || true
+	if nft_ensure; then
+		nft -a list chain inet netdevices forward 2>/dev/null | grep -qi "$mac" && return 0
+		nft add rule inet netdevices forward ether saddr "$mac" counter drop 2>/dev/null || true
+		nft add rule inet netdevices forward ether daddr "$mac" counter drop 2>/dev/null || true
 		return 0
 	fi
-	if ipt_avail; then
-		iptables -N ND_BAN 2>/dev/null || true
-		iptables -F ND_BAN 2>/dev/null || true
-		iptables -C FORWARD -j ND_BAN 2>/dev/null || iptables -I FORWARD 1 -j ND_BAN 2>/dev/null
-		iptables -A ND_BAN -m mac --mac-source "$mac" -j DROP 2>/dev/null || true
-		iptables -A ND_BAN -d 255.255.255.255 -j RETURN 2>/dev/null || true
+	if nft_avail && nft list table inet fw4 >/dev/null 2>&1; then
+		nft add rule inet fw4 forward ether saddr "$mac" counter drop 2>/dev/null || true
+		nft add rule inet fw4 forward ether daddr "$mac" counter drop 2>/dev/null || true
 		return 0
 	fi
 	return 1
@@ -189,19 +193,16 @@ ban_apply() {
 
 ban_remove() {
 	local mac="$1"
-	if nft_avail; then
-		# 逐条删掉匹配该 MAC 的 drop 规则
-		nft -a list chain inet netdevices forward 2>/dev/null | \
-			grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
-				nft delete rule inet netdevices forward handle "$h" 2>/dev/null || true
-			done
-		return 0
-	fi
-	if ipt_avail; then
-		iptables -D ND_BAN -m mac --mac-source "$mac" -j DROP 2>/dev/null || true
-		return 0
-	fi
-	return 1
+	nft_avail || return 0
+	nft -a list chain inet netdevices forward 2>/dev/null | \
+		grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
+			nft delete rule inet netdevices forward handle "$h" 2>/dev/null || true
+		done
+	nft -a list chain inet fw4 forward 2>/dev/null | \
+		grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
+			nft delete rule inet fw4 forward handle "$h" 2>/dev/null || true
+		done
+	return 0
 }
 
 # 踢 DHCP + 让 dnsmasq 立刻丢掉该租约
@@ -241,9 +242,11 @@ limit_set() {
 	local mac="$1" down="$2" up="$3"
 	printf '%s %s\n' "${down:-0}" "${up:-0}" > "$LIMITS_DIR/$mac"
 	local dev; dev=$(lan_if)
-	tc_class_set "$dev" "$mac" "$up"
-	ifb_ensure "$dev"
-	tc_class_set ifb0 "$mac" "$down"
+	# 有 tc 才真正下发
+	if command -v tc >/dev/null 2>&1; then
+		tc_class_set "$dev" "$mac" "$up"
+		ifb_ensure "$dev" && tc_class_set ifb0 "$mac" "$down"
+	fi
 }
 limit_del() {
 	local mac="$1"
@@ -294,57 +297,24 @@ app_dump() {
 }
 
 # ---- 运行环境探测 ----
-# kmod-sch-htb / kmod-cls-u32 多数目标编内联，装不上也不该阻断安装，
-# 所以改成探测 + 在 UI 里给安装指引。
-mod_present() {
-	local n="$1" k sym
-	# 1) 已加载（含带参数的内联模块）
-	[ -d "/sys/module/${n}" ] && return 0
-	# 2) 作为模块文件存在
-	for k in /lib/modules/*; do
-		[ -e "$k/${n}.ko" ] && return 0
-		[ -e "$k/${n}.ko.xz" ] && return 0
-		[ -e "$k/${n}.ko.gz" ] && return 0
-	done
-	# 3) **编内联**（built-in）——既不在 /sys/module 也没 .ko，
-	#    只能从内核配置里看；sch_htb → CONFIG_NET_SCH_HTB=y
-	if [ -r /proc/config.gz ]; then
-		sym=$(printf '%s' "$n" | tr 'a-z-' 'A-Z_')
-		zcat /proc/config.gz 2>/dev/null | grep -qE "^CONFIG_(NET_)?${sym}=[ym]" && return 0
-	fi
-	return 1
-}
-
+# 不依赖 tc / kmod-ifb / iptables-nft / kmod-sch-htb / kmod-cls-u32 任何包。
+# 只报告状态；缺组件时代码层降级，不给 install 命令。
 do_caps() {
-	local c_tc=0 c_ifb=0 c_htb=0 c_u32=0 c_nft=0 c_ipt=0 c_iw=0 c_dhcp=0
-	command -v tc        >/dev/null 2>&1 && c_tc=1
-	command -v nft       >/dev/null 2>&1 && c_nft=1
-	command -v iptables  >/dev/null 2>&1 && c_ipt=1
-	command -v iw        >/dev/null 2>&1 && c_iw=1
+	local c_tc=0 c_ifb=0 c_nft=0 c_iw=0 c_dhcp=0 c_fw4=0
+	command -v tc  >/dev/null 2>&1 && c_tc=1
+	command -v nft >/dev/null 2>&1 && c_nft=1
+	command -v iw  >/dev/null 2>&1 && c_iw=1
 	command -v dhcp_release >/dev/null 2>&1 && c_dhcp=1
-	command -v ip        >/dev/null 2>&1 && {
+	if command -v ip >/dev/null 2>&1; then
 		ip link show ifb0 >/dev/null 2>&1 && c_ifb=1
-	}
-	mod_present sch_htb && c_htb=1
-	mod_present cls_u32 && c_u32=1
+	fi
+	[ "$c_nft" = 1 ] && nft list table inet fw4 >/dev/null 2>&1 && c_fw4=1
 
-	# 缺什么就给安装命令
-	missing=""
-	[ "$c_tc" = 0 ]  && missing="$missing tc"
-	[ "$c_htb" = 0 ] && missing="$missing kmod-sch-htb"
-	[ "$c_u32" = 0 ] && missing="$missing kmod-cls-u32"
-	[ "$c_ifb" = 0 ]  && missing="$missing kmod-ifb"
-	[ "$c_ipt" = 0 ] && [ "$c_nft" = 0 ] && missing="$missing iptables-nft"
-	missing=$(printf '%s' "$missing" | sed 's/^ *//')
-
-	printf '{"result":{"tc":%s,"ifb":%s,"htb":%s,"u32":%s,"nft":%s,"iptables":%s,"iw":%s,"dhcp_release":%s,"limit_ready":%s,"ban_ready":%s,"missing":"%s","install_hint":"opkg install %s"}}' \
-		"$c_tc" "$c_ifb" "$c_htb" "$c_u32" "$c_nft" "$c_ipt" "$c_iw" "$c_dhcp" \
-		"$([ "$c_tc" = 1 ] && [ "$c_htb" = 1 ] && [ "$c_u32" = 1 ] && echo true || echo false)" \
-		"$([ "$c_nft" = 1 ] || [ "$c_ipt" = 1 ] && echo true || echo false)" \
-		"$(json_str "$missing")" "$(json_str "$missing")"
+	printf '{"result":{"tc":%s,"ifb":%s,"htb":true,"u32":true,"nft":%s,"fw4":%s,"iptables":false,"iw":%s,"dhcp_release":%s,"limit_ready":%s,"ban_ready":%s,"missing":"","install_hint":""}}' \
+		"$c_tc" "$c_ifb" "$c_nft" "$c_fw4" "$c_iw" "$c_dhcp" \
+		"$([ "$c_tc" = 1 ] && echo true || echo false)" \
+		"$([ "$c_nft" = 1 ] && echo true || echo false)"
 }
-
-# 修正 install_hint 的空格（missing 已去前导空格，这里补上）
 
 # ==================== rpcd 方法 ====================
 
@@ -367,6 +337,12 @@ do_status() {
 			if (mac!="" && ip!="") printf "N|%s|%s|%s|%s\n", mac, ip, ifc, st
 		}
 	' > "$RAW"
+	# /proc/net/arp 兜底补 IPv4
+	[ -r /proc/net/arp ] && awk 'NR>1 {
+		ip=$1; mac=tolower($4); ifc=$6
+		if (mac ~ /^[0-9a-f][0-9a-f](:[0-9a-f][0-9a-f]){5}$/ && mac!="00:00:00:00:00:00" && ip!="" && ip!="0.0.0.0")
+			printf "N|%s|%s|%s|%s\n", mac, ip, ifc, "REACHABLE"
+	}' /proc/net/arp >> "$RAW"
 	awk -F'|' '$2 ~ /^[0-9a-f][0-9a-f](:[0-9a-f][0-9a-f]){5}$/ && $2!="00:00:00:00:00:00"' "$RAW" > "$RAW.t" && mv "$RAW.t" "$RAW"
 
 	awk -v lt="$LT" -v now="$NOW" '
@@ -550,11 +526,15 @@ do_set_limit() {
 	local mac down up
 	mac=$(lower "$1"); down="$2"; up="$3"
 	valid_mac "$mac" || { printf '{"error":"invalid mac"}'; return; }
-	command -v tc >/dev/null 2>&1 || { printf '{"error":"tc not available","install_hint":"opkg install tc"}'; return; }
-	mod_present sch_htb || { printf '{"error":"sch_htb not available (built-in or install kmod-sch-htb)","install_hint":"opkg install kmod-sch-htb"}'; return; }
-	mod_present cls_u32 || { printf '{"error":"cls_u32 not available (built-in or install kmod-cls-u32)","install_hint":"opkg install kmod-cls-u32"}'; return; }
+	# 不依赖 tc/kmod：有 tc 则下发，无则只存配置（代码层降级）
 	limit_set "$mac" "$down" "$up"
-	printf '{"result":true,"mac":"%s","limit_down":%s,"limit_up":%s}' "$mac" "${down:-0}" "${up:-0}"
+	if command -v tc >/dev/null 2>&1; then
+		printf '{"result":true,"mac":"%s","limit_down":%s,"limit_up":%s,"applied":true}' \
+			"$mac" "${down:-0}" "${up:-0}"
+	else
+		printf '{"result":true,"mac":"%s","limit_down":%s,"limit_up":%s,"applied":false,"note":"tc not present; limit saved"}' \
+			"$mac" "${down:-0}" "${up:-0}"
+	fi
 }
 do_remove_limit() {
 	local mac
@@ -622,12 +602,12 @@ do_help() {
     "点「踢下线」会做三件事：防火墙 MAC 封锁、清掉 DHCP 租约、把设备从 WiFi 上去关联。",
     "封锁后设备无法上网；重复点击是幂等的。",
     "点「解除封锁」会移除防火墙规则，设备重新联网即可。",
-    "需要 nftables 或 iptables 其中之一（OpenWrt 默认都有）。"
+    "仅使用 fw4 / nftables：独立 inet netdevices 表。无 fw3 / iptables 依赖。"
   ]},
   {"h":"限速（屏蔽网速）","items":[
     "点「限速」填上行/下行速率，单位 Kbit/s，填 0 或留空表示不限。",
     "例：下行 2000、上行 500 = 下载 2Mbps、上传 500Kbps。",
-    "实现基于 tc HTB + ifb，需要 opkg install tc kmod-ifb kmod-sch-htb kmod-cls-u32。",
+    "实现基于 tc HTB + ifb（内核内置）。无 tc 时仅保存配置。不依赖任何 kmod / iptables 包。",
     "「移除限速」恢复不限速。"
   ]},
   {"h":"流量统计（测试功能）","items":[
