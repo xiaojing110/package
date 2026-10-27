@@ -7,7 +7,8 @@
       "dirs": [
         "luci-app-passwall"
       ],
-      "target": "."
+      "target": ".",
+      "skip_if_not_newer": false。
     },
     {
       "name": "luci-app-passwall2",
@@ -16,7 +17,8 @@
       "dirs": [
         "luci-app-passwall2"
       ],
-      "target": "."
+      "target": ".",
+      "skip_if_not_newer": false。
     },
     {
       "name": "passwall-packages",
