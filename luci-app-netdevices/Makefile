@@ -7,9 +7,10 @@ PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=netdevices
 
-LUCI_TITLE:=LuCI support for Online Devices (IPv4/IPv6/MAC/uptime/static lease)
+LUCI_TITLE:=LuCI support for Online Devices (IPv4/IPv6/MAC/uptime/static lease/kick/limit/traffic)
 LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+luci-base +jsonfilter
+# jsonfilter: 解析 ubus 参数　tc/kmod-*: 限速与流量统计　ebtables/nft: 封锁
+LUCI_DEPENDS:=+luci-base +jsonfilter +tc +kmod-ifb +kmod-sch-htb +kmod-cls-u32 +ip-full
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
