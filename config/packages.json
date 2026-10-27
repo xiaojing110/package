@@ -8,7 +8,7 @@
         "luci-app-passwall"
       ],
       "target": ".",
-      "skip_if_not_newer": false。
+      "skip_if_not_newer": false
     },
     {
       "name": "luci-app-passwall2",
@@ -18,7 +18,7 @@
         "luci-app-passwall2"
       ],
       "target": ".",
-      "skip_if_not_newer": false。
+      "skip_if_not_newer": false
     },
     {
       "name": "passwall-packages",
