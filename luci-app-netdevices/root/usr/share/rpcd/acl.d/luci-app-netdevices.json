@@ -1,0 +1,17 @@
+{
+	"luci-app-netdevices": {
+		"description": "Grant access to Online Devices (netdevices)",
+		"read": {
+			"ubus": {
+				"netdevices": [ "status" ]
+			},
+			"uci": [ "dhcp" ]
+		},
+		"write": {
+			"ubus": {
+				"netdevices": [ "set_static", "remove_static" ]
+			},
+			"uci": [ "dhcp" ]
+		}
+	}
+}

@@ -1,0 +1,112 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "在线设备"
+msgstr "在线设备"
+
+msgid "显示局域网在线设备的 IPv4 / IPv6 地址、MAC、在线时长与上线时间，可直接设置 DHCP 静态地址。"
+msgstr "显示局域网在线设备的 IPv4 / IPv6 地址、MAC、在线时长与上线时间，可直接设置 DHCP 静态地址。"
+
+msgid "数据来源：ARP/NDP 邻居表、dnsmasq 租约、/etc/config/dhcp。设备名优先取 DHCP 主机名。"
+msgstr "数据来源：ARP/NDP 邻居表、dnsmasq 租约、/etc/config/dhcp。设备名优先取 DHCP 主机名。"
+
+msgid "设备名"
+msgstr "设备名"
+
+msgid "IPv4 地址"
+msgstr "IPv4 地址"
+
+msgid "IPv6 地址"
+msgstr "IPv6 地址"
+
+msgid "MAC 地址"
+msgstr "MAC 地址"
+
+msgid "在线时长"
+msgstr "在线时长"
+
+msgid "上线时间"
+msgstr "上线时间"
+
+msgid "状态"
+msgstr "状态"
+
+msgid "操作"
+msgstr "操作"
+
+msgid "在线"
+msgstr "在线"
+
+msgid "离线"
+msgstr "离线"
+
+msgid "未知设备"
+msgstr "未知设备"
+
+msgid "没有发现设备"
+msgstr "没有发现设备"
+
+msgid "在线设备总数"
+msgstr "设备总数"
+
+msgid "静态地址"
+msgstr "静态地址"
+
+msgid "刷新"
+msgstr "刷新"
+
+msgid "设置静态地址"
+msgstr "设置静态地址"
+
+msgid "修改静态地址"
+msgstr "修改静态地址"
+
+msgid "移除"
+msgstr "移除"
+
+msgid "移除静态地址"
+msgstr "移除静态地址"
+
+msgid "IPv4 静态地址"
+msgstr "IPv4 静态地址"
+
+msgid "设备名（可选）"
+msgstr "设备名（可选）"
+
+msgid "保存"
+msgstr "保存"
+
+msgid "更新"
+msgstr "更新"
+
+msgid "取消"
+msgstr "取消"
+
+msgid "请输入 IPv4 地址"
+msgstr "请输入 IPv4 地址"
+
+msgid "静态地址已保存"
+msgstr "静态地址已保存"
+
+msgid "保存失败: "
+msgstr "保存失败: "
+
+msgid "已移除静态地址"
+msgstr "已移除静态地址"
+
+msgid "读取失败: "
+msgstr "读取失败: "
+
+msgid "%d 秒"
+msgstr "%d 秒"
+
+msgid "%d 天 %d 小时"
+msgstr "%d 天 %d 小时"
+
+msgid "%d 小时 %d 分"
+msgstr "%d 小时 %d 分"
+
+msgid "%d 分钟"
+msgstr "%d 分钟"

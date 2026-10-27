@@ -1,0 +1,321 @@
+#!/bin/sh
+# ============================================================
+#  netdevices —— rpcd 执行后端
+#
+#  提供 ubus 对象 netdevices：
+#    netdevices.status        读取在线设备（IPv4/IPv6/MAC/在线时长/上线时间/设备名）
+#    netdevices.set_static    设置静态地址（写 /etc/config/dhcp）
+#    netdevices.remove_static 移除静态地址
+#
+#  兼容 OpenWrt 23.05 / 24.10 / 25.12 / snapshot（busybox ash + busybox awk）
+# ============================================================
+
+STATE_DIR=/tmp/netdevices
+FIRST_SEEN="$STATE_DIR/first_seen"
+LEASES=/tmp/dhcp.leases
+
+mkdir -p "$STATE_DIR" 2>/dev/null
+touch "$FIRST_SEEN" 2>/dev/null
+[ -f "$LEASES" ] || : > "$LEASES"
+
+# ---- 工具 ----
+json_str() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+		-e 's/\t/\\t/g' -e 's/\r//g' | tr -d '\n'
+}
+
+lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+# 只要合法的单播 MAC（拒绝 00:00:00:00:00:00 占位、多播位）
+valid_mac() {
+	printf '%s' "$1" | grep -qiE '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$' || return 1
+	[ "$1" = "00:00:00:00:00:00" ] && return 1
+	return 0
+}
+
+# 租期转秒（uci 里是 12h / 30m / infinite 之类）
+leasetime_sec() {
+	local t
+	t=$(command -v uci >/dev/null 2>&1 && uci -q get dhcp.@dnsmasq[0].leasetime)
+	case "$t" in
+		''|infinite|0) echo 43200 ;;
+		*h) echo $(( ${t%h} * 3600 )) ;;
+		*m) echo $(( ${t%m} * 60 )) ;;
+		*s) echo "${t%s}" ;;
+		*)  echo "$t" ;;
+	esac
+}
+
+# ---- 静态地址（/etc/config/dhcp 的 config host）----
+# 输出: S|mac|ip|name
+static_dump() {
+	command -v uci >/dev/null 2>&1 || return 0
+	local i=0 mac
+	while :; do
+		mac=$(uci -q get dhcp.@host[$i].mac)
+		[ -z "$mac" ] && break
+		printf 'S|%s|%s|%s\n' \
+			"$(lower "$mac")" \
+			"$(uci -q get dhcp.@host[$i].ip)" \
+			"$(uci -q get dhcp.@host[$i].name)"
+		i=$((i + 1))
+	done
+}
+
+# ---- 设备名：租约主机名 > 静态 name > /etc/hosts ----
+lookup_name() {
+	local mac="$1" ip="$2" n
+	n=$(awk -v m="$mac" 'tolower($2)==m && $4!="*" && $4!="" {print $4; exit}' "$LEASES" 2>/dev/null)
+	if [ -z "$n" ] && [ -n "$ip" ] && [ -f /etc/hosts ]; then
+		n=$(awk -v ip="$ip" '$1==ip {print $2; exit}' /etc/hosts 2>/dev/null)
+	fi
+	printf '%s' "$n"
+}
+
+# ---- 主：采集设备 ----
+# 统一中间格式（以 | 分隔，首列是来源标记）：
+#   N|mac|ip|iface|state          邻居表
+#   L|mac|ip|name|leasestart      DHCP 租约
+#   S|mac|ip|name                 静态地址
+do_status() {
+	local NOW LT
+	NOW=$(date +%s)
+	LT=$(leasetime_sec)
+
+	local RAW MERGED
+	RAW=$(mktemp)
+	MERGED=$(mktemp)
+
+	# 1) 邻居表（IPv4 + IPv6）—— 判定“在线”
+	ip neigh show 2>/dev/null | awk '
+		{
+			ip = $1; mac = ""; ifc = ""; st = ""
+			for (i = 1; i <= NF; i++) {
+				if ($i == "dev")          ifc = $(i+1)
+				else if ($i == "lladdr")  mac = tolower($(i+1))
+				else if ($i == "REACHABLE" || $i == "STALE"   || $i == "DELAY" || \
+				         $i == "PROBE"     || $i == "PERMANENT" || $i == "NOARP" || \
+				         $i == "FAILED"    || $i == "INCOMPLETE") st = $i
+			}
+			if (mac != "" && ip != "") printf "N|%s|%s|%s|%s\n", mac, ip, ifc, st
+		}
+	' > "$RAW"
+
+	# 邻居表里的 MAC 也校验一遍（拒绝占位/多播）
+	awk -F'|' '$2 ~ /^[0-9a-f][0-9a-f](:[0-9a-f][0-9a-f]){5}$/ && $2 != "00:00:00:00:00:00"' "$RAW" > "$RAW.t" && mv "$RAW.t" "$RAW"
+
+	# 2) DHCP 租约: "<expiry> <mac> <ip> <hostname> <clientid>"
+	#    注意：不能用 exp 当变量名（awk 保留函数）
+	#    start = expiry - leasetime 是下界估值；若算出未来值（leasetime 配置
+	#    与实际发放不一致）则置 0，交给 shell 回退到“现在”
+	awk -v lt="$LT" -v now="$NOW" '
+		NF >= 4 {
+			expir = $1 + 0
+			mac = tolower($2); ip = $3; host = $4
+			if (host == "*") host = ""
+			if (mac !~ /^[0-9a-f][0-9a-f](:[0-9a-f][0-9a-f]){5}$/) next
+			if (mac == "00:00:00:00:00:00") next
+			if (ip == "*" || ip == "0.0.0.0" || ip == "") next
+			start = (expir > 0) ? (expir - lt) : 0
+			if (start > now || start < 0) start = 0
+			printf "L|%s|%s|%s|%s\n", mac, ip, host, start
+		}
+	' "$LEASES" >> "$RAW"
+
+	# 3) 静态地址
+	static_dump >> "$RAW"
+
+	# 4) 按 MAC 聚合
+	awk -F'|' -v now="$NOW" '
+		{
+			tag = $1; mac = $2
+			if (mac == "") next
+
+			if (!(mac in seen)) { seen[mac] = 1; order[++n] = mac }
+
+			if (tag == "N") {
+				ip = $3; ifc = $4; st = $5
+				if (ip == "") next
+				is6 = (index(ip, ":") > 0) ? 1 : 0
+				if (is6) {
+					if (ip6[mac] == "") ip6[mac] = ip
+					else if (index("," ip6[mac] ",", "," ip ",") == 0) ip6[mac] = ip6[mac] "," ip
+				} else {
+					if (ip4[mac] == "") ip4[mac] = ip
+					else if (index("," ip4[mac] ",", "," ip ",") == 0) ip4[mac] = ip4[mac] "," ip
+				}
+				if (ifc != "" && iface[mac] == "") iface[mac] = ifc
+				if (st != "" && stv[mac] == "") stv[mac] = st
+			}
+			else if (tag == "L") {
+				ip = $3; host = $4; start = $5 + 0
+				if (ip != "") {
+					is6 = (index(ip, ":") > 0) ? 1 : 0
+					if (is6) {
+						if (ip6[mac] == "") ip6[mac] = ip
+						else if (index("," ip6[mac] ",", "," ip ",") == 0) ip6[mac] = ip6[mac] "," ip
+					} else {
+						if (ip4[mac] == "") ip4[mac] = ip
+						else if (index("," ip4[mac] ",", "," ip ",") == 0) ip4[mac] = ip4[mac] "," ip
+					}
+				}
+				if (host != "" && nm[mac] == "") nm[mac] = host
+				if (start > 0 && (firsts[mac] == "" || start < firsts[mac])) firsts[mac] = start
+			}
+			else if (tag == "S") {
+				ip = $3; name = $4
+				stat[mac] = 1
+				if (name != "" && nm[mac] == "") nm[mac] = name
+				if (ip != "") {
+					is6 = (index(ip, ":") > 0) ? 1 : 0
+					if (is6) {
+						if (ip6[mac] == "") ip6[mac] = ip
+						else if (index("," ip6[mac] ",", "," ip ",") == 0) ip6[mac] = ip6[mac] "," ip
+					} else {
+						if (ip4[mac] == "") ip4[mac] = ip
+						else if (index("," ip4[mac] ",", "," ip ",") == 0) ip4[mac] = ip4[mac] "," ip
+					}
+				}
+			}
+		}
+		END {
+			for (i = 1; i <= n; i++) {
+				m = order[i]
+				printf "%s|%s|%s|%s|%s|%s|%s|%s\n", \
+					m, ip4[m], ip6[m], nm[m], iface[m], stv[m], \
+					(firsts[m] == "" ? 0 : firsts[m]), (stat[m] ? 1 : 0)
+			}
+		}
+	' "$RAW" > "$MERGED"
+
+	rm -f "$RAW"
+
+	# 5) 首次发现时间（本地状态文件）+ 设备名补齐 + 输出 JSON
+	local out="["
+	local first=1
+	local mac ip4 ip6 nm ifc st start stt fs name uptime online
+
+	while IFS='|' read -r mac ip4 ip6 nm ifc st start stt; do
+		[ -z "$mac" ] && continue
+
+		name="$nm"
+		[ -z "$name" ] && name=$(lookup_name "$mac" "${ip4%%,*}")
+
+		fs=$(awk -v m="$mac" '$1 == m {print $2; exit}' "$FIRST_SEEN" 2>/dev/null)
+		if [ -z "$fs" ] || [ "$fs" = "0" ]; then
+			if [ -n "$start" ] && [ "$start" != "0" ]; then fs="$start"; else fs="$NOW"; fi
+			awk -v m="$mac" '$1 != m' "$FIRST_SEEN" 2>/dev/null > "$FIRST_SEEN.t"
+			printf '%s %s\n' "$mac" "$fs" >> "$FIRST_SEEN.t"
+			mv "$FIRST_SEEN.t" "$FIRST_SEEN"
+		fi
+
+		uptime=$((NOW - fs))
+		[ "$uptime" -lt 0 ] && uptime=0
+
+		case "$st" in
+			REACHABLE|STALE|DELAY|PROBE|PERMANENT|NOARP) online="true" ;;
+			*) if [ -n "$ip4" ] || [ -n "$ip6" ]; then online="true"; else online="false"; fi ;;
+		esac
+
+		[ $first -eq 1 ] && first=0 || out="$out,"
+		out="$out{\"mac\":\"$(json_str "$mac")\""
+		out="$out,\"name\":\"$(json_str "$name")\""
+		out="$out,\"ip4\":\"$(json_str "$ip4")\""
+		out="$out,\"ip6\":\"$(json_str "$ip6")\""
+		out="$out,\"interface\":\"$(json_str "$ifc")\""
+		out="$out,\"state\":\"$(json_str "$st")\""
+		out="$out,\"online\":$online"
+		out="$out,\"first_seen\":${fs:-0}"
+		out="$out,\"uptime\":$uptime"
+		out="$out,\"is_static\":$([ "$stt" = "1" ] && echo true || echo false)"
+		out="$out}"
+	done < "$MERGED"
+
+	out="$out]"
+	rm -f "$MERGED"
+
+	# 清理 30 天未见的记录，避免状态文件无限膨胀
+	local cutoff=$((NOW - 2592000))
+	awk -v c="$cutoff" '$2 + 0 >= c' "$FIRST_SEEN" > "$FIRST_SEEN.t" 2>/dev/null && mv "$FIRST_SEEN.t" "$FIRST_SEEN"
+
+	printf '{"result":%s}' "$out"
+}
+
+# ---- 设置静态地址 ----
+do_set_static() {
+	command -v uci >/dev/null 2>&1 || { printf '{"error":"uci not available"}'; return; }
+	local mac ip name i=0 existing
+	mac=$(lower "$1"); ip="$2"; name="$3"
+
+	[ -z "$mac" ] && { printf '{"error":"mac required"}'; return; }
+	[ -z "$ip" ]  && { printf '{"error":"ip required"}'; return; }
+
+	while :; do
+		existing=$(uci -q get dhcp.@host[$i].mac)
+		[ -z "$existing" ] && break
+		if [ "$(lower "$existing")" = "$mac" ]; then
+			uci -q set dhcp.@host[$i].ip="$ip"
+			[ -n "$name" ] && uci -q set dhcp.@host[$i].name="$name"
+			uci -q commit dhcp
+			printf '{"result":true,"action":"updated"}'
+			return
+		fi
+		i=$((i + 1))
+	done
+
+	uci -q add dhcp host >/dev/null
+	uci -q set dhcp.@host[-1].mac="$mac"
+	uci -q set dhcp.@host[-1].ip="$ip"
+	[ -n "$name" ] && uci -q set dhcp.@host[-1].name="$name"
+	uci -q commit dhcp
+	printf '{"result":true,"action":"added"}'
+}
+
+# ---- 移除静态地址 ----
+do_remove_static() {
+	command -v uci >/dev/null 2>&1 || { printf '{"error":"uci not available"}'; return; }
+	local mac i=0 existing
+	mac=$(lower "$1")
+	[ -z "$mac" ] && { printf '{"error":"mac required"}'; return; }
+
+	while :; do
+		existing=$(uci -q get dhcp.@host[$i].mac)
+		[ -z "$existing" ] && break
+		if [ "$(lower "$existing")" = "$mac" ]; then
+			uci -q delete dhcp.@host[$i]
+			uci -q commit dhcp
+			printf '{"result":true}'
+			return
+		fi
+		i=$((i + 1))
+	done
+	printf '{"result":false,"error":"not found"}'
+}
+
+# ---- rpcd 入口 ----
+case "$1" in
+	list)
+		cat <<'EOF'
+{
+  "status": {},
+  "set_static": { "mac": "String", "ip": "String", "name": "String" },
+  "remove_static": { "mac": "String" }
+}
+EOF
+		;;
+	call)
+		[ -t 0 ] || IN=$(cat)
+		case "$2" in
+			status)        do_status ;;
+			set_static)    do_set_static    "$(printf '%s' "$IN" | jsonfilter -e '@.mac' 2>/dev/null)" \
+			                               "$(printf '%s' "$IN" | jsonfilter -e '@.ip' 2>/dev/null)" \
+			                               "$(printf '%s' "$IN" | jsonfilter -e '@.name' 2>/dev/null)" ;;
+			remove_static) do_remove_static "$(printf '%s' "$IN" | jsonfilter -e '@.mac' 2>/dev/null)" ;;
+			*)             printf '{"error":"unknown method"}' ;;
+		esac
+		;;
+	*)
+		echo "usage: $0 {list|call <method>}" >&2
+		exit 1
+		;;
+esac

@@ -1,0 +1,14 @@
+{
+	"admin/status/netdevices": {
+		"title": "在线设备",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "netdevices/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-netdevices" ],
+			"uci": { "dhcp": true }
+		}
+	}
+}
