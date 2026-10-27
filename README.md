@@ -519,10 +519,13 @@ Release 正文是 `build-info.txt`：commit、时间、平台、编译了哪些�
      （如 `feeds/packages/net/sing-box`，不删的话 make 仍会扫到 OpenWrt 自带的那份）
 * **sing-box 专项检查**：注入后会打印 `feeds/packages/net/sing-box` 是否已删、
   扫描路径里是否只剩本仓库那份，并对**每个**注入的包做唯一性校验。
-* **产物只留本仓库的插件**：SDK 编译会把 feed 依赖（`coreutils` / `golang` / `lua` /
-  `libuci`…）也顺带编出来，那些不属于本仓库。打包与 Release 上传前会用
-  仓库包目录做**白名单过滤**，非本仓库的依赖包一律丢弃，日志里会报
-  `保留本仓库插件 N 个，丢弃非本仓库依赖包 M 个`。
+* **产物只留本仓库的插件（含语言包）**：SDK 编译会把 feed 依赖（`coreutils` / `golang` / `lua` /
+  `luci-base`…）也顺带编出来，那些不属于本仓库。打包与 Release 上传前会用
+  包目录做**白名单过滤**，非本仓库的依赖包一律丢弃。
+  **语言包 `luci-i18n-<名>-<lang>` 会一并保留** —— `luci.mk` 生成语言包时把
+  `luci-app-` / `luci-theme-` 前缀去掉（`luci-app-passwall2` → `luci-i18n-passwall2-zh-cn`），
+  所以白名单要按「去前缀后的名字」多匹配一次，否则语言包会被整批误丢。
+  日志会报 `保留本仓库插件 N 个，丢弃非本仓库依赖包 M 个`。
 * **`.ipk` / `.apk` 都收**：OpenWrt 25.x 换成 `apk` 包管理，24.x 及以前是 `ipk`。
 * **单包失败不拖垮整个 job**：逐包编译，失败的记进 `build-result.txt` 并在
   Summary 里列出，产物与日志仍会上传；全部失败则 job 标红。

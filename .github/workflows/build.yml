@@ -647,10 +647,22 @@ jobs:
           # 不属于本仓库，一律丢弃，不打包也不上传 Release。
           REPOPKGS=$(cat repopkgs.txt 2>/dev/null || echo "")
           in_repo() {
-            local base="$1" d
+            local base="$1" d b pfx
             [ -z "$REPOPKGS" ] && return 0   # 白名单缺失时保守保留
             for d in $REPOPKGS; do
+              # 1) 本体包：xray-core / xray-core-dbg / luci-app-passwall …
               case "$base" in "$d"|"$d"-*) return 0 ;; esac
+              # 2) **语言包**：luci-i18n-<basename>-<lang>
+              #    luci.mk 生成时把 luci-app- / luci-theme- 前缀去掉，
+              #    所以 luci-app-passwall2 → luci-i18n-passwall2-zh-cn，
+              #    只用包目录名做前缀匹配会把语言包全挡掉。
+              b="${d#luci-app-}"
+              b="${b#luci-theme-}"
+              pfx="luci-i18n-${b}"
+              case "$base" in "$pfx"|"$pfx"-*) return 0 ;; esac
+              # 3) 再兼客一下用完整包名作前缀的写法
+              pfx="luci-i18n-${d}"
+              case "$base" in "$pfx"|"$pfx"-*) return 0 ;; esac
             done
             return 1
           }
