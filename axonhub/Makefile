@@ -45,11 +45,13 @@ endef
 # Upstream frontend sources use CRLF; OpenWrt patch(1) cannot apply content
 # hunks reliably. Normalize line endings and align UI cleanup defaults here
 # (server-side defaults are applied by patches/170-*.patch).
+FE_STORAGE_POLICY:=$(PKG_BUILD_DIR)/frontend/src/features/system/components/storage-policy-settings.tsx
+
 define Build/Prepare
 	$(call Build/Prepare/Default)
-	$(SED) 's/\r$$//' \
-		$(PKG_BUILD_DIR)/frontend/src/features/system/components/storage-policy-settings.tsx
-	$(SED) \
+	tr -d '\r' < $(FE_STORAGE_POLICY) > $(FE_STORAGE_POLICY).tmp
+	mv $(FE_STORAGE_POLICY).tmp $(FE_STORAGE_POLICY)
+	sed -i \
 		-e "s/{ resourceType: 'requests', enabled: false, cleanupDays: 3 }/{ resourceType: 'requests', enabled: true, cleanupDays: 1 }/" \
 		-e "s/{ resourceType: 'usage_logs', enabled: false, cleanupDays: 30 }/{ resourceType: 'usage_logs', enabled: true, cleanupDays: 1 }/" \
 		-e "s/{ resourceType: 'request_bodies', enabled: false, cleanupDays: 7 }/{ resourceType: 'request_bodies', enabled: true, cleanupDays: 1 }/" \
@@ -62,7 +64,7 @@ define Build/Prepare
 		-e 's/?\.cleanupDays || 30/!.cleanupDays/g' \
 		-e 's/?\.cleanupDays || 7/!.cleanupDays/g' \
 		-e 's/?\.cleanupDays || 3/!.cleanupDays/g' \
-		$(PKG_BUILD_DIR)/frontend/src/features/system/components/storage-policy-settings.tsx
+		$(FE_STORAGE_POLICY)
 endef
 
 define Build/Compile
