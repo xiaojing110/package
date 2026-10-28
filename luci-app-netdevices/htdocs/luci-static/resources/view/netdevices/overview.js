@@ -17,6 +17,12 @@ var callHelp        = rpc.declare({ object: 'netdevices', method: 'help',       
 
 var autoTimer = null;
 
+/* 待保存的实验功能开关：勾选只改本地，点「保存 / 应用与保存」才提交 */
+var flagState = { traffic: false, app_usage: false };
+var flagSaved = { traffic: false, app_usage: false };
+var flagDirty = false;
+
+
 /* ---------------- 样式 ---------------- */
 var CSS = [
 	'.nd-wrap{font-size:13px}',
@@ -373,16 +379,17 @@ function renderCaps(c) {
 }
 
 /* ---------------- 实验功能开关 ---------------- */
-function renderFlags(flags, reload) {
+function renderFlags(reload) {
 	function sw(key, label, desc) {
 		var cb = E('input', { 'type': 'checkbox' });
-		cb.checked = !!(flags && flags[key]);
+		cb.checked = !!flagState[key];
 		cb.addEventListener('change', function () {
-			var patch = {};
-			patch[key] = cb.checked ? '1' : '0';
-			return callSetFlags(patch.traffic || (flags && flags.traffic ? '1' : '0'),
-			                   patch.app_usage || (flags && flags.app_usage ? '1' : '0'))
-				.then(function () { notify(_('开关已更新'), true); reload(); });
+			flagState[key] = cb.checked;
+			flagDirty = (flagState.traffic !== flagSaved.traffic) ||
+			            (flagState.app_usage !== flagSaved.app_usage);
+			// 高亮“未保存”提示
+			var hint = document.getElementById('nd-dirty');
+			if (hint) hint.style.display = flagDirty ? 'inline-block' : 'none';
 		});
 		return E('div', { 'class': 'nd-switch' }, [
 			cb,
@@ -393,11 +400,22 @@ function renderFlags(flags, reload) {
 	}
 
 	return E('div', { 'class': 'nd-section' }, [
-		E('h3', {}, [_('实验功能'), E('span', { 'class': 'nd-muted', 'style': 'margin-left:8px;font-weight:400' },
-			[_('默认关闭 · 数据仅供参考')])]),
-		E('div', { 'class': 'nd-body body' }, [
+		E('h3', {}, [
+			_('实验功能'),
+			E('span', { 'class': 'nd-muted', 'style': 'margin-left:8px;font-weight:400' },
+				[_('默认关闭 · 数据仅供参考')]),
+			E('span', {
+				'id': 'nd-dirty',
+				'class': 'nd-tag nd-test',
+				'style': 'margin-left:10px;display:' + (flagDirty ? 'inline-block' : 'none')
+			}, [_('未保存')])
+		]),
+		E('div', { 'class': 'body' }, [
 			sw('traffic', _('流量统计'), _('统计每台设备的上行/下行字节数（来自 tc 计数器，重启后从零开始）')),
-			sw('app_usage', _('App 使用记录'), _('按目标端口粗分服务类型（HTTPS/DNS/邮件/IoT/推送/流媒体等），无法识别具体 App 名'))
+			sw('app_usage', _('App 使用记录'), _('按目标端口粗分服务类型（HTTPS/DNS/邮件/IoT/推送/流媒体等），无法识别具体 App 名')),
+			E('div', { 'class': 'nd-muted', 'style': 'margin-top:8px' }, [
+				_('改动后请点右下角的「保存」或「应用与保存」生效；「重置」恢复为上次保存的状态。')
+			])
 		])
 	]);
 }
@@ -425,7 +443,7 @@ function renderAll(data, flags, help, caps) {
 	var el = E('div', {}, [
 		renderTable(data, flags, load),
 		renderCaps(caps),
-		renderFlags(flags, load),
+		renderFlags(load),
 		renderHelp(help)
 	]);
 	if (rootEl && rootEl.parentNode) rootEl.parentNode.replaceChild(el, rootEl);
@@ -441,6 +459,13 @@ function load() {
 		var st = r[0] || {};
 		var data = st.result || (Array.isArray(st) ? st : []);
 		var flags = st.flags || {};
+		// 首次加载时把远端开关同步到本地；之后勾选只改本地
+		if (!flagDirty) {
+			flagState.traffic = !!flags.traffic;
+			flagState.app_usage = !!flags.app_usage;
+			flagSaved.traffic = flagState.traffic;
+			flagSaved.app_usage = flagState.app_usage;
+		}
 		renderAll(data, flags, r[1] && r[1].result ? r[1].result : r[1],
 		          r[2] && r[2].result ? r[2].result : r[2]);
 	}).catch(function (e) {
@@ -466,8 +491,48 @@ function load() {
 	});
 }
 
+function commitFlags() {
+	return callSetFlags(flagState.traffic ? '1' : '0',
+	                    flagState.app_usage ? '1' : '0').then(function () {
+		flagSaved.traffic = flagState.traffic;
+		flagSaved.app_usage = flagState.app_usage;
+		flagDirty = false;
+	});
+}
+
 return view.extend({
-	handleSave: null, handleSaveApply: null, handleReset: null,
+	/* 保存：只落盘，不重载页面 */
+	handleSave: function (ev) {
+		if (ev) ev.preventDefault();
+		if (!flagDirty) {
+			ui.addNotification(null, E('p', {}, _('没有需要保存的更改')), 'info');
+			return Promise.resolve();
+		}
+		return commitFlags().then(function () {
+			ui.addNotification(null, E('p', {}, _('已保存')), 'info');
+			var hint = document.getElementById('nd-dirty');
+			if (hint) hint.style.display = 'none';
+		});
+	},
+
+	/* 应用与保存：落盘 + 刷新设备数据 */
+	handleSaveApply: function (ev) {
+		if (ev) ev.preventDefault();
+		return (flagDirty ? commitFlags() : Promise.resolve()).then(function () {
+			ui.addNotification(null, E('p', {}, _('已保存并应用')), 'info');
+			return load();
+		});
+	},
+
+	/* 重置：恢复为上次保存的状态 */
+	handleReset: function (ev) {
+		if (ev) ev.preventDefault();
+		flagState.traffic = flagSaved.traffic;
+		flagState.app_usage = flagSaved.app_usage;
+		flagDirty = false;
+		ui.addNotification(null, E('p', {}, _('已重置为上次保存的状态')), 'info');
+		return load();
+	},
 
 	render: function () {
 		injectCss();

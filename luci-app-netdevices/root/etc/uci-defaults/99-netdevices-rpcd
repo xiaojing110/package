@@ -1,0 +1,25 @@
+#!/bin/sh
+# 保证 rpcd 后端可执行并被加载。
+#
+# 这里覆盖两种安装途径：
+#   · opkg install  —— base-files 会执行 /etc/uci-defaults/*
+#   · 固件/镜像安装  —— 首次开机由 /etc/init.d/boot 执行
+#
+# 关键点：必须用 `restart` 而不是 `reload`。
+#   rpcd 的 reload 只重读配置文件，**不会重新扫描 /usr/libexec/rpcd/**，
+#   所以新装的插件不会被注册成 ubus 对象，前端就报 "Object not found"。
+
+[ -n "$IPKG_INSTROOT" ] && exit 0
+
+chmod 755 /usr/libexec/rpcd/netdevices 2>/dev/null
+
+/etc/init.d/rpcd restart >/dev/null 2>&1
+
+# 自检：确认 ubus 上已经有 netdevices 对象
+sleep 1
+if ubus list 2>/dev/null | grep -q '^netdevices$'; then
+	exit 0
+fi
+echo "[netdevices] 警告：ubus 上仍无 netdevices 对象，请手动执行：" >&2
+echo "  chmod +x /usr/libexec/rpcd/netdevices && /etc/init.d/rpcd restart" >&2
+exit 0

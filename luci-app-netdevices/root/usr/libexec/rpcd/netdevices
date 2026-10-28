@@ -124,9 +124,18 @@ ifb_ensure() {
 
 # 每 MAC 的 class id = 十进制后两段，简单哈希避免冲突
 mac2class() {
-	local m="$1"
-	local h=$(printf '%s' "$m" | tr -d ':' | tail -c 6)
-	printf '%d' "0x$h" 2>/dev/null | awk '{print $1%50000+2}'
+	# 取 MAC 后 3 字节当十六进制散列，纯 awk 实现（busybox printf '0x' 与
+	# gawk 的 strtonum 都不可靠）
+	printf '%s' "$1" | tr -d ':' | tail -c 6 | awk '
+		{
+			s = tolower($0); n = 0
+			for (i = 1; i <= length(s); i++) {
+				d = index("0123456789abcdef", substr(s, i, 1)) - 1
+				if (d < 0) d = 0
+				n = n * 16 + d
+			}
+			print (n % 50000) + 2
+		}'
 }
 
 # 建/改某 MAC 的 class（rate 单位 kbit/s，0 = 不限速）
@@ -135,12 +144,15 @@ tc_class_set() {
 	cls=$(mac2class "$mac")
 	tc_root_ensure "$dev"
 	if [ -z "$kbit" ] || [ "$kbit" = "0" ]; then
-		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit 2>/dev/null || true
+		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit 2>/dev/null || \
+			tc class add    dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit 2>/dev/null || true
 	else
-		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || true
+		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || \
+			tc class add    dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || true
 	fi
-	tc filter replace dev "$dev" parent 1: protocol all prio 1 u32 \
-		match ether src "$mac" flowid "1:$cls" 2>/dev/null || true
+	# filter 的 replace 在旧 iproute2 上没有，先删再加
+	tc filter del dev "$dev" parent 1: protocol all prio 1 u32 match ether src "$mac" flowid "1:$cls" 2>/dev/null || true
+	tc filter add dev "$dev" parent 1: protocol all prio 1 u32 match ether src "$mac" flowid "1:$cls" 2>/dev/null || true
 }
 
 tc_class_del() {
@@ -154,9 +166,12 @@ tc_class_del() {
 tc_bytes() {
 	local dev="$1" mac="$2" cls out
 	cls=$(mac2class "$mac")
+	# 注意：必须在遇到新的 class 行时重置 f，否则会读到下一个 class 的 Sent
 	out=$(tc -s class show dev "$dev" 2>/dev/null | awk -v c="1:$cls" '
-		$1=="class" && $3==c {f=1}
-		f && /Sent/ {for(i=1;i<=NF;i++) if($i=="Sent"){print $(i+1); exit}}
+		$1 == "class" { f = ($3 == c) }
+		f && /Sent/ {
+			for (i = 1; i <= NF; i++) if ($i == "Sent") { print $(i+1); exit }
+		}
 	')
 	printf '%s' "${out:-0}"
 }
@@ -456,28 +471,48 @@ do_status() {
 		"$out" "$(flag_get traffic)" "$(flag_get app_usage)"
 }
 
+# 让 dnsmasq 立即读取新的静态租约（走系统默认 DHCP）
+reload_dhcp() {
+	if [ -x /etc/init.d/dnsmasq ]; then
+		/etc/init.d/dnsmasq reload >/dev/null 2>&1 && return 0
+	fi
+	kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null || true
+	return 0
+}
+
 do_set_static() {
 	command -v uci >/dev/null 2>&1 || { printf '{"error":"uci not available"}'; return; }
-	local mac ip name i=0 existing
+	local mac ip name i=0 existing sec
 	mac=$(lower "$1"); ip="$2"; name="$3"
 	[ -z "$mac" ] && { printf '{"error":"mac required"}'; return; }
 	[ -z "$ip" ]  && { printf '{"error":"ip required"}'; return; }
+
+	# 同 MAC 已存在则更新（走 dnsmasq 标准 config host）
 	while :; do
-		existing=$(uci -q get dhcp.@host[$i].mac); [ -z "$existing" ] && break
+		existing=$(uci -q get dhcp.@host[$i].mac)
+		[ -z "$existing" ] && break
 		if [ "$(lower "$existing")" = "$mac" ]; then
 			uci -q set dhcp.@host[$i].ip="$ip"
 			[ -n "$name" ] && uci -q set dhcp.@host[$i].name="$name"
+			uci -q set dhcp.@host[$i].dns="1"
 			uci -q commit dhcp
-			printf '{"result":true,"action":"updated"}'; return
+			reload_dhcp
+			printf '{"result":true,"action":"updated","ip":"%s"}' "$ip"
+			return
 		fi
 		i=$((i+1))
 	done
-	uci -q add dhcp host >/dev/null
-	uci -q set dhcp.@host[-1].mac="$mac"
-	uci -q set dhcp.@host[-1].ip="$ip"
-	[ -n "$name" ] && uci -q set dhcp.@host[-1].name="$name"
+
+	# 新增：用 uci add 返回的段名，比 @host[-1] 稳（后者并发时会指错）
+	sec=$(uci -q add dhcp host)
+	[ -z "$sec" ] && { printf '{"error":"failed to add dhcp host"}'; return; }
+	uci -q set "dhcp.$sec.mac=$mac"
+	uci -q set "dhcp.$sec.ip=$ip"
+	[ -n "$name" ] && uci -q set "dhcp.$sec.name=$name"
+	uci -q set "dhcp.$sec.dns=1"
 	uci -q commit dhcp
-	printf '{"result":true,"action":"added"}'
+	reload_dhcp
+	printf '{"result":true,"action":"added","section":"%s","ip":"%s"}' "$sec" "$ip"
 }
 
 do_remove_static() {
@@ -488,6 +523,7 @@ do_remove_static() {
 		existing=$(uci -q get dhcp.@host[$i].mac); [ -z "$existing" ] && break
 		if [ "$(lower "$existing")" = "$mac" ]; then
 			uci -q delete dhcp.@host[$i]; uci -q commit dhcp
+			reload_dhcp
 			printf '{"result":true}'; return
 		fi
 		i=$((i+1))

@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# 每次开机保证 rpcd 后端可执行并被注册成 ubus 对象。
+#
+# 为什么需要：可执行位在打包/解压/传输途中可能丢；丢了 rpcd 会**静默跳过**
+# 该插件，前端就报 "Object not found"，界面读不到在线设备。
+# 这里在 rpcd 起来之后再补一次 chmod + restart，开机即用，无需手工执行。
+
+START=99
+
+start() {
+	[ -x /usr/libexec/rpcd/netdevices ] || chmod 755 /usr/libexec/rpcd/netdevices 2>/dev/null
+
+	# ubus 上已经有对象就不用动 rpcd
+	if ubus list 2>/dev/null | grep -q '^netdevices$'; then
+		return 0
+	fi
+
+	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
+}
+
+stop() { :; }
