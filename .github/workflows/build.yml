@@ -240,11 +240,17 @@ jobs:
             exit 0
           fi
 
-          # 上次构建到哪个 commit，记录在 Release 的 build-info.txt 里
+          # 上次构建到哪个 commit —— 从**最新**那个 packages-* Release 里取
+          # （每次编译都新建 Release，所以不能再用固定 tag）
           LAST=""
           if command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-}" ]; then
-            gh release download "$REL_TAG" -p 'build-info.txt' -D /tmp/bi >/dev/null 2>&1 || true
-            [ -f /tmp/bi/build-info.txt ] && LAST=$(sed -n 's/^commit=//p' /tmp/bi/build-info.txt | head -1)
+            LAST_REL=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                       --jq '[.[] | select(.tag_name | startswith("packages-"))][0].tag_name' 2>/dev/null || true)
+            if [ -n "$LAST_REL" ]; then
+              echo "→ 最近一次构建 Release: $LAST_REL"
+              gh release download "$LAST_REL" -p 'build-info.txt' -D /tmp/bi >/dev/null 2>&1 || true
+              [ -f /tmp/bi/build-info.txt ] && LAST=$(sed -n 's/^commit=//p' /tmp/bi/build-info.txt | head -1)
+            fi
           fi
           if [ -z "$LAST" ]; then
             LAST=$(curl -sL --fail --retry 2 \
@@ -743,7 +749,6 @@ jobs:
           set -uo pipefail
           if [ "${UPLOAD_RELEASE:-true}" != "true" ]; then echo "→ upload_release=false，跳过"; exit 0; fi
           if [ -f ./sdk.env ]; then . ./sdk.env; else TAG="${OWT_VER}-${PLATFORM%%/*}-${PLATFORM##*/}"; fi
-          REL_TAG="packages-${TAG}"
 
           OUT="artifacts/${TAG}"
           N=$(find "$OUT" -type f \( -name '*.ipk' -o -name '*.apk' \) 2>/dev/null | wc -l)
@@ -752,31 +757,48 @@ jobs:
             exit 0
           fi
 
-          # 写 build-info.txt：下次 new-commits 就 diff 这个 commit
+          # ---- 每次编译都新建一个 Release，不堆在同一个里 ----
+          #   标题带日期（YY.MM.DD），tag 再加时分保证同日多次编译也不冲突
+          DATE=$(date +%-y.%-m.%-d)          # 26.10.29
+          STAMP=$(date +%Y%m%d-%H%M)         # 20261029-0043
+          REL_TAG="packages-${TAG}-${STAMP}"
+          REL_TITLE="OpenWrt 插件包 · ${PLATFORM} · ${OWT_VER} ${DATE}"
+
+          # ---- 中文构建说明 ----
           {
-            echo "commit=$(git rev-parse HEAD)"
-            echo "date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-            echo "platform=${PLATFORM}"
-            echo "openwrt=${OWT_VER}"
-            echo "build_mode=${BUILD_MODE:-full}"
-            echo "preset=${PRESET:-all}"
-            echo "plugin=${PLUGIN:-all}"
-            echo "packages=$(cat pkglist.txt 2>/dev/null | tr '\n' ' ')"
+            echo "# OpenWrt 插件包构建说明"
             echo ""
-            echo "result:"
-            cat build-result.txt 2>/dev/null || echo "(无)"
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 构建时间 | $(date -u '+%Y-%m-%d %H:%M:%S') UTC |"
+            echo "| 目标平台 | \`${PLATFORM:-未知}\` |"
+            echo "| OpenWrt 版本 | \`${OWT_VER:-未知}\` |"
+            echo "| 编译范围 | \`${BUILD_MODE:-full}\` |"
+            echo "| 插件选择 | plugin=\`${PLUGIN:-all}\` / preset=\`${PRESET:-all}\` |"
+            echo ""
+            echo "**构建提交**: \`$(git rev-parse HEAD)\`"
+            echo ""
+            echo "## 编译结果"
+            echo '```'
+            cat build-result.txt 2>/dev/null || echo "（无）"
+            echo '```'
+            echo ""
+            echo "## 安装说明"
+            echo '```'
+            echo "opkg install ./*.ipk        # OpenWrt 24.x 及以前"
+            echo "apk add ./*.apk             # OpenWrt 25.x"
+            echo '```'
+            echo ""
+            echo "> 说明：本产物只包含**本仓库内的插件**及其语言包，"
+            echo "> feed 依赖（coreutils / golang / lua 等）请自行通过 feeds 安装。"
           } > build-info.txt
 
-          echo "→ Release: $REL_TAG  （$N 个包）"
-          # 滚动 tag：存在则更新，不存在则新建
-          if gh release view "$REL_TAG" >/dev/null 2>&1; then
-            gh release upload "$REL_TAG" "$OUT"/* build-info.txt --clobber
-            gh release edit "$REL_TAG" \
-              --title "OpenWrt 插件包 · ${PLATFORM} · ${OWT_VER}" \
-              --notes-file build-info.txt >/dev/null
-          else
-            gh release create "$REL_TAG" "$OUT"/* build-info.txt \
-              --title "OpenWrt 插件包 · ${PLATFORM} · ${OWT_VER}" \
-              --notes-file build-info.txt
-          fi
+          # 机器可读行，供 new-commits 模式 diff 用（追加在末尾，不影响正文）
+          echo "commit=$(git rev-parse HEAD)" >> build-info.txt
+
+          echo "→ 新建 Release: $REL_TAG"
+          echo "→ 标题: $REL_TITLE   （$N 个包）"
+          gh release create "$REL_TAG" "$OUT"/* build-info.txt \
+            --title "$REL_TITLE" \
+            --notes-file build-info.txt
           echo "→ 已发布到 Releases/${REL_TAG}"
