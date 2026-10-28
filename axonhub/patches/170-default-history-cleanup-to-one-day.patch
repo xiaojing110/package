@@ -5,15 +5,12 @@ Subject: [PATCH] storage: default all history cleanup options to one day
 Enable each built-in cleanup option with one-day retention for new
 instances. Keep explicit stored policy values unchanged. Align the
 frontend initial controls and manual cleanup dialog with these defaults.
-
 The initialized cleanup state contains all five resources; use their
 configured values directly when opening manual cleanup instead of
 substituting unrelated runtime retention values.
 
 Base-Commit: 0896305eeee89435049575d55a813f72901f703b
-
 ---
-
 --- a/frontend/src/features/system/components/storage-policy-settings.tsx
 +++ b/frontend/src/features/system/components/storage-policy-settings.tsx
 @@ -95,9 +95,9 @@ function groupBodyPreviewItems(items: Gc
@@ -125,3 +122,4 @@ Base-Commit: 0896305eeee89435049575d55a813f72901f703b
 +			require.Equal(t, 1, opt.CleanupDays)
  		}
  	}
+EOF
