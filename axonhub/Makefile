@@ -1,13 +1,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=axonhub
-PKG_VERSION:=20261028
+PKG_VERSION:=20261029
 PKG_RELEASE:=1
-PKG_SOURCE_VERSION:=0896305eeee89435049575d55a813f72901f703b
+PKG_SOURCE_VERSION:=6c181e01fc2a49a536bed09bc96e16599ac682ad
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_SOURCE_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/looplj/axonhub/tar.gz/$(PKG_SOURCE_VERSION)?
-PKG_HASH:=e3d7fc80a305643793d01d4c82c44d33d1f7df7ffe7c1e08a51f882fa5a6960b
+PKG_HASH:=3b2a0af6de8281b93ab04218c10655cac3fdd6ed5dcce9fe5f763f08edefe7a8
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_SOURCE_VERSION)
 
 PKG_LICENSE:=Apache-2.0 AND LGPL-3.0-only
@@ -40,31 +40,6 @@ endef
 define Package/$(PKG_NAME)/description
   AxonHub is an all-in-one AI gateway with an embedded management interface,
   API format translation, request tracing and provider load balancing.
-endef
-
-# Upstream frontend sources use CRLF; OpenWrt patch(1) cannot apply content
-# hunks reliably. Normalize line endings and align UI cleanup defaults here
-# (server-side defaults are applied by patches/170-*.patch).
-FE_STORAGE_POLICY:=$(PKG_BUILD_DIR)/frontend/src/features/system/components/storage-policy-settings.tsx
-
-define Build/Prepare
-	$(call Build/Prepare/Default)
-	tr -d '\r' < $(FE_STORAGE_POLICY) > $(FE_STORAGE_POLICY).tmp
-	mv $(FE_STORAGE_POLICY).tmp $(FE_STORAGE_POLICY)
-	sed -i \
-		-e "s/{ resourceType: 'requests', enabled: false, cleanupDays: 3 }/{ resourceType: 'requests', enabled: true, cleanupDays: 1 }/" \
-		-e "s/{ resourceType: 'usage_logs', enabled: false, cleanupDays: 30 }/{ resourceType: 'usage_logs', enabled: true, cleanupDays: 1 }/" \
-		-e "s/{ resourceType: 'request_bodies', enabled: false, cleanupDays: 7 }/{ resourceType: 'request_bodies', enabled: true, cleanupDays: 1 }/" \
-		-e "s/{ resourceType: 'response_bodies', enabled: false, cleanupDays: 7 }/{ resourceType: 'response_bodies', enabled: true, cleanupDays: 1 }/" \
-		-e "s/{ resourceType: 'response_chunks', enabled: false, cleanupDays: 3 }/{ resourceType: 'response_chunks', enabled: true, cleanupDays: 1 }/" \
-		-e "s/{ resourceType, enabled: false, cleanupDays: 7, ...patch }/{ resourceType, enabled: true, cleanupDays: 1, ...patch }/" \
-		-e 's/useState(30)/useState(1)/g' \
-		-e 's/useState(7)/useState(1)/g' \
-		-e 's/useState(3)/useState(1)/g' \
-		-e 's/?\.cleanupDays || 30/!.cleanupDays/g' \
-		-e 's/?\.cleanupDays || 7/!.cleanupDays/g' \
-		-e 's/?\.cleanupDays || 3/!.cleanupDays/g' \
-		$(FE_STORAGE_POLICY)
 endef
 
 define Build/Compile
