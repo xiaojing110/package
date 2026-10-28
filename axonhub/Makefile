@@ -42,6 +42,29 @@ define Package/$(PKG_NAME)/description
   API format translation, request tracing and provider load balancing.
 endef
 
+# Upstream frontend sources use CRLF; OpenWrt patch(1) cannot apply content
+# hunks reliably. Normalize line endings and align UI cleanup defaults here
+# (server-side defaults are applied by patches/170-*.patch).
+define Build/Prepare
+	$(call Build/Prepare/Default)
+	$(SED) 's/\r$$//' \
+		$(PKG_BUILD_DIR)/frontend/src/features/system/components/storage-policy-settings.tsx
+	$(SED) \
+		-e "s/{ resourceType: 'requests', enabled: false, cleanupDays: 3 }/{ resourceType: 'requests', enabled: true, cleanupDays: 1 }/" \
+		-e "s/{ resourceType: 'usage_logs', enabled: false, cleanupDays: 30 }/{ resourceType: 'usage_logs', enabled: true, cleanupDays: 1 }/" \
+		-e "s/{ resourceType: 'request_bodies', enabled: false, cleanupDays: 7 }/{ resourceType: 'request_bodies', enabled: true, cleanupDays: 1 }/" \
+		-e "s/{ resourceType: 'response_bodies', enabled: false, cleanupDays: 7 }/{ resourceType: 'response_bodies', enabled: true, cleanupDays: 1 }/" \
+		-e "s/{ resourceType: 'response_chunks', enabled: false, cleanupDays: 3 }/{ resourceType: 'response_chunks', enabled: true, cleanupDays: 1 }/" \
+		-e "s/{ resourceType, enabled: false, cleanupDays: 7, ...patch }/{ resourceType, enabled: true, cleanupDays: 1, ...patch }/" \
+		-e 's/useState(30)/useState(1)/g' \
+		-e 's/useState(7)/useState(1)/g' \
+		-e 's/useState(3)/useState(1)/g' \
+		-e 's/?\.cleanupDays || 30/!.cleanupDays/g' \
+		-e 's/?\.cleanupDays || 7/!.cleanupDays/g' \
+		-e 's/?\.cleanupDays || 3/!.cleanupDays/g' \
+		$(PKG_BUILD_DIR)/frontend/src/features/system/components/storage-policy-settings.tsx
+endef
+
 define Build/Compile
 	( \
 		set -e; \

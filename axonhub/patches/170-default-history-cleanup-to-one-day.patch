@@ -3,78 +3,15 @@ Date: Tue, 13 Oct 2026 20:27:48 +0800
 Subject: [PATCH] storage: default all history cleanup options to one day
 
 Enable each built-in cleanup option with one-day retention for new
-instances. Keep explicit stored policy values unchanged. Align the
-frontend initial controls and manual cleanup dialog with these defaults.
-The initialized cleanup state contains all five resources; use their
-configured values directly when opening manual cleanup instead of
-substituting unrelated runtime retention values.
+instances. Keep explicit stored policy values unchanged.
+
+Frontend UI defaults are adjusted in the package Makefile (CRLF source
+cannot be reliably patched by OpenWrt's patch utility).
 
 Base-Commit: 0896305eeee89435049575d55a813f72901f703b
 
 ---
 
---- a/frontend/src/features/system/components/storage-policy-settings.tsx
-+++ b/frontend/src/features/system/components/storage-policy-settings.tsx
-@@ -94,11 +94,11 @@
- }
- 
- const DEFAULT_CLEANUP_OPTIONS: CleanupOption[] = [
--  { resourceType: 'requests', enabled: false, cleanupDays: 3 },
--  { resourceType: 'usage_logs', enabled: false, cleanupDays: 30 },
--  { resourceType: 'request_bodies', enabled: false, cleanupDays: 7 },
--  { resourceType: 'response_bodies', enabled: false, cleanupDays: 7 },
--  { resourceType: 'response_chunks', enabled: false, cleanupDays: 3 },
-+  { resourceType: 'requests', enabled: true, cleanupDays: 1 },
-+  { resourceType: 'usage_logs', enabled: true, cleanupDays: 1 },
-+  { resourceType: 'request_bodies', enabled: true, cleanupDays: 1 },
-+  { resourceType: 'response_bodies', enabled: true, cleanupDays: 1 },
-+  { resourceType: 'response_chunks', enabled: true, cleanupDays: 1 },
- ];
- 
- function ensureCleanupOptions(options: CleanupOption[]): CleanupOption[] {
-@@ -120,7 +120,7 @@
-   patch: Partial<CleanupOption>
- ): CleanupOption[] {
-   if (!options.some((option) => option.resourceType === resourceType)) {
--    return [...options, { resourceType, enabled: false, cleanupDays: 7, ...patch }];
-+    return [...options, { resourceType, enabled: true, cleanupDays: 1, ...patch }];
-   }
- 
-   return options.map((option) => (option.resourceType === resourceType ? { ...option, ...patch } : option));
-@@ -146,11 +146,11 @@
-     cleanupOptions: ensureCleanupOptions(storagePolicy?.cleanupOptions ?? []),
-   });
- 
--  const [manualRequestsDays, setManualRequestsDays] = useState(30);
--  const [manualUsageLogsDays, setManualUsageLogsDays] = useState(7);
--  const [manualRequestBodiesDays, setManualRequestBodiesDays] = useState(7);
--  const [manualResponseBodiesDays, setManualResponseBodiesDays] = useState(7);
--  const [manualResponseChunksDays, setManualResponseChunksDays] = useState(3);
-+  const [manualRequestsDays, setManualRequestsDays] = useState(1);
-+  const [manualUsageLogsDays, setManualUsageLogsDays] = useState(1);
-+  const [manualRequestBodiesDays, setManualRequestBodiesDays] = useState(1);
-+  const [manualResponseBodiesDays, setManualResponseBodiesDays] = useState(1);
-+  const [manualResponseChunksDays, setManualResponseChunksDays] = useState(1);
-   const [previewItems, setPreviewItems] = useState<GcCleanupPreviewItem[]>([]);
-   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-   const [previewFailed, setPreviewFailed] = useState(false);
-@@ -256,11 +256,11 @@
-     }
- 
-     {
--      const reqDays = cleanupOption(storagePolicyState.cleanupOptions, 'requests')?.cleanupDays || 30;
--      const usageDays = cleanupOption(storagePolicyState.cleanupOptions, 'usage_logs')?.cleanupDays || 7;
--      const requestBodyDays = cleanupOption(storagePolicyState.cleanupOptions, 'request_bodies')?.cleanupDays || 7;
--      const responseBodyDays = cleanupOption(storagePolicyState.cleanupOptions, 'response_bodies')?.cleanupDays || 7;
--      const chunkDays = cleanupOption(storagePolicyState.cleanupOptions, 'response_chunks')?.cleanupDays || 3;
-+      const reqDays = cleanupOption(storagePolicyState.cleanupOptions, 'requests')!.cleanupDays;
-+      const usageDays = cleanupOption(storagePolicyState.cleanupOptions, 'usage_logs')!.cleanupDays;
-+      const requestBodyDays = cleanupOption(storagePolicyState.cleanupOptions, 'request_bodies')!.cleanupDays;
-+      const responseBodyDays = cleanupOption(storagePolicyState.cleanupOptions, 'response_bodies')!.cleanupDays;
-+      const chunkDays = cleanupOption(storagePolicyState.cleanupOptions, 'response_chunks')!.cleanupDays;
-       setManualRequestsDays(reqDays);
-       setManualUsageLogsDays(usageDays);
-       setManualRequestBodiesDays(requestBodyDays);
 --- a/internal/server/biz/system_default.go
 +++ b/internal/server/biz/system_default.go
 @@ -12,28 +12,28 @@
