@@ -31,17 +31,22 @@ var flagSaved = { traffic: false, app_usage: false };
 var flagDirty = false;
 
 /* ---------------- 样式 ---------------- */
+/* 统一用 argon / LuCI 的 CSS 变量并带回退，深浅色主题都能自适应 */
 var CSS = [
-	'.nd-wrap{font-size:13px}',
+	'.nd-wrap{font-size:13px;color:var(--text-color,#2d3748)}',
+	/* argon 会给 h2/h3/h4 加白底 + 圆角 + 阴影，先中和掉，否则标题变成一块白条 */
+	'.nd-wrap h1,.nd-wrap h2,.nd-wrap h3,.nd-wrap h4,.nd-wrap h5{background:none;box-shadow:none;',
+	'border:0;border-radius:0;width:auto;padding:0;margin:0;color:inherit;line-height:1.4}',
 	'.nd-hero{background:linear-gradient(135deg,#2b6cb0 0%,#4299e1 60%,#63b3ed 100%);color:#fff;',
 	'border-radius:10px;padding:16px 20px;margin-bottom:14px;box-shadow:0 3px 10px rgba(0,0,0,.12)}',
-	'.nd-hero h2{margin:0 0 4px;color:#fff;font-size:19px}',
-	'.nd-hero .sub{opacity:.85;font-size:12px}',
+	'.nd-hero h2{margin:0 0 4px;color:#fff;font-size:19px;font-weight:700}',
+	'.nd-hero .sub{opacity:.9;font-size:12px;line-height:1.5}',
 	'.nd-cards{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}',
-	'.nd-card{flex:1 1 120px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;',
+	'.nd-card{flex:1 1 120px;background:var(--surface-raised,#fff);',
+	'border:1px solid var(--border-muted,#e2e8f0);border-radius:8px;',
 	'padding:10px 12px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.05)}',
 	'.nd-card .num{font-size:22px;font-weight:700;line-height:1.2}',
-	'.nd-card .lbl{font-size:11px;color:#718096;margin-top:2px}',
+	'.nd-card .lbl{font-size:11px;color:var(--muted-text,#718096);margin-top:2px}',
 	'.nd-tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}',
 	'.nd-on{background:#c6f6d5;color:#22543d}.nd-off{background:#fed7d7;color:#822727}',
 	'.nd-ban{background:#feebc8;color:#7b341e}.nd-lim{background:#bee3f8;color:#2a4365}',
@@ -52,25 +57,67 @@ var CSS = [
 	'.nd-b-blue{background:#3182ce}.nd-b-green{background:#38a169}.nd-b-red{background:#e53e3e}',
 	'.nd-b-orange{background:#dd6b20}.nd-b-gray{background:#718096}.nd-b-purple{background:#805ad5}',
 	'.nd-b-teal{background:#319795}',
-	'.nd-section{background:#fff;border:1px solid #e2e8f0;border-radius:8px;margin:12px 0;overflow:hidden}',
-	'.nd-section>h3{margin:0;padding:10px 14px;background:#f7fafc;border-bottom:1px solid #e2e8f0;',
-	'font-size:14px;color:#2d3748}',
+	'.nd-section{background:var(--surface-raised,#fff);border:1px solid var(--border-muted,#e2e8f0);',
+	'border-radius:8px;margin:12px 0;overflow:hidden}',
+	'.nd-section>h3{margin:0;padding:10px 14px;background:var(--surface-muted,#f7fafc);',
+	'border-bottom:1px solid var(--border-muted,#e2e8f0);font-size:14px;color:var(--text-strong,#2d3748)}',
 	'.nd-section .body{padding:12px 14px}',
 	'.nd-help ol{margin:6px 0 14px 20px}.nd-help li{margin:4px 0;line-height:1.7}',
-	'.nd-help code{background:#edf2f7;padding:1px 6px;border-radius:4px;font-size:11px}',
-	'.nd-switch{display:flex;align-items:center;gap:8px;padding:8px 0}',
-	'.nd-switch input{width:16px;height:16px}',
-	'.nd-table{width:100%;border-collapse:collapse}',
-	'.nd-table th{background:#f7fafc;color:#4a5568;font-weight:600;font-size:12px;',
-	'padding:8px 10px;text-align:left;border-bottom:2px solid #e2e8f0;white-space:nowrap}',
-	'.nd-table td{padding:9px 10px;border-bottom:1px solid #edf2f7;vertical-align:middle}',
-	'.nd-table tr:hover{background:#f7fafc}',
+	'.nd-help h4{margin:0 0 6px;padding:0;font-size:13px;color:var(--link-color,#2b6cb0)}',
+	'.nd-help code{background:var(--surface-muted,#edf2f7);padding:1px 6px;border-radius:4px;font-size:11px}',
+	'.nd-switch{display:flex;align-items:center;gap:10px;padding:8px 0;flex-wrap:wrap}',
+	'.nd-switch input{width:16px;height:16px;margin:0}',
+	'.nd-switch .nd-tag{flex:0 0 auto}',
+	'.nd-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}',
+	'.nd-table{width:100%;border-collapse:collapse;min-width:680px}',
+	'.nd-table th{background:var(--surface-muted,#f7fafc);color:var(--muted-text,#4a5568);',
+	'font-weight:600;font-size:12px;padding:8px 10px;text-align:left;',
+	'border-bottom:2px solid var(--border-muted,#e2e8f0);white-space:nowrap}',
+	'.nd-table td{padding:9px 10px;border-bottom:1px solid var(--border-muted,#edf2f7);vertical-align:middle}',
+	'.nd-table tr:hover{background:var(--surface-muted,#f7fafc)}',
 	'.nd-mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}',
-	'.nd-name{font-weight:600;color:#2d3748}',
-	'.nd-unknown{color:#a0aec0;font-style:italic}',
-	'.nd-bar{height:6px;background:#edf2f7;border-radius:3px;overflow:hidden;margin-top:3px}',
+	'.nd-name{font-weight:600;color:var(--text-strong,#2d3748)}',
+	'.nd-unknown{color:var(--muted-text,#a0aec0);font-style:italic}',
+	'.nd-bar{height:6px;background:var(--surface-muted,#edf2f7);border-radius:3px;overflow:hidden;margin-top:3px}',
 	'.nd-bar>i{display:block;height:100%;background:#4299e1}',
-	'.nd-muted{color:#a0aec0;font-size:11px}'
+	'.nd-muted{color:var(--muted-text,#a0aec0);font-size:11px}',
+	'.nd-hintbox{margin-top:12px;padding:8px 12px;border-radius:6px;',
+	'background:var(--surface-muted,#f0fff4);border:1px solid var(--border-muted,#9ae6b4)}',
+	/* ---------- 手机端适配 ---------- */
+	'@media (max-width:760px){',
+	'.nd-hero{padding:12px 14px;border-radius:8px;margin-bottom:10px}',
+	'.nd-hero h2{font-size:17px}',
+	'.nd-hero .sub{font-size:11px}',
+	'.nd-cards{gap:8px;margin:10px 0}',
+	'.nd-card{flex:1 1 44%;padding:8px 10px}',
+	'.nd-card .num{font-size:19px}',
+	'.nd-section{margin:10px 0;border-radius:8px}',
+	'.nd-section>h3{padding:9px 12px;font-size:13px}',
+	'.nd-section .body{padding:10px 12px}',
+	/* 表格在窄屏改成「一台设备一张卡」，不再横向滚动 */
+	'.nd-table{min-width:0;border-collapse:separate;border-spacing:0}',
+	'.nd-table .nd-head{display:none}',
+	'.nd-table,.nd-table tbody,.nd-table tr,.nd-table td{display:block;width:auto}',
+	'.nd-table tr{border:1px solid var(--border-muted,#e2e8f0);border-radius:8px;',
+	'padding:8px 12px;margin:0 0 8px;background:var(--surface-raised,#fff)}',
+	'.nd-table tr:hover{background:var(--surface-raised,#fff)}',
+	'.nd-table td{border:0;padding:3px 0;display:grid;grid-template-columns:56px minmax(0,1fr);',
+	'gap:2px 10px;align-items:start;font-size:12px;word-break:break-all}',
+	'.nd-table td::before{content:attr(data-label);grid-column:1;color:var(--muted-text,#718096);',
+	'font-size:11px;line-height:1.9}',
+	'.nd-table td>*{grid-column:2}',
+	'.nd-table td.nd-ops{display:block;padding-top:8px}',
+	'.nd-table td.nd-ops::before{display:block;margin-bottom:2px}',
+	'.nd-table td.nd-ops .nd-btn{padding:6px 12px;margin:2px 4px 2px 0}',
+	'.nd-table td.nd-empty{display:block;text-align:center;padding:18px 8px}',
+	'.nd-table td.nd-empty::before{display:none}',
+	'.nd-switch{gap:6px}',
+	'.nd-switch .nd-muted{flex:1 1 100%}',
+	'}',
+	'@media (max-width:340px){',
+	'.nd-card{flex:1 1 100%}',
+	'.nd-hero h2{font-size:16px}',
+	'}'
 ].join('');
 
 function injectCss() {
@@ -366,32 +413,34 @@ function renderTable(data, flags, reload) {
 		}
 
 		return E('tr', {}, [
-			E('td', {}, [
+			E('td', { 'data-label': _('设备') }, [
 				E('div', { 'class': 'nd-name' }, [d.name || E('span', { 'class': 'nd-unknown' }, [_('未知设备')])]),
 				E('div', { 'style': 'margin-top:3px' }, tags)
 			]),
-			E('td', { 'class': 'nd-mono' }, [(d.ip4 || '-').split(',').join(', ') || '-']),
-			E('td', { 'class': 'nd-mono', 'style': 'font-size:11px;word-break:break-all;max-width:180px' },
+			E('td', { 'class': 'nd-mono', 'data-label': 'IPv4' }, [(d.ip4 || '-').split(',').join(', ') || '-']),
+			E('td', { 'class': 'nd-mono', 'data-label': 'IPv6', 'style': 'word-break:break-all' },
 				[(d.ip6 || '-').split(',').join(', ') || '-']),
-			E('td', { 'class': 'nd-mono' }, [d.mac]),
-			E('td', {}, [
+			E('td', { 'class': 'nd-mono', 'data-label': _('MAC') }, [d.mac]),
+			E('td', { 'data-label': _('在线时长') }, [
 				E('div', {}, [fmtDur(d.uptime)]),
 				E('div', { 'class': 'nd-muted' }, [fmtTime(d.first_seen)]),
 				traffic
 			]),
-			E('td', { 'class': 'nd-mono', 'style': 'font-size:11px' }, [
+			E('td', { 'class': 'nd-mono', 'data-label': _('限速'), 'style': 'font-size:11px' }, [
 				(d.limit_down > 0 || d.limit_up > 0)
 					? E('div', {}, [_('↓') + ' ' + fmtRate(d.limit_down), E('br'), _('↑') + ' ' + fmtRate(d.limit_up)])
 					: E('span', { 'class': 'nd-muted' }, [_('不限速')])
 			]),
-			E('td', { 'style': 'white-space:nowrap' }, ops)
+			E('td', { 'class': 'nd-ops', 'data-label': _('操作') }, ops)
 		]);
 	});
 
 	if (!rows.length) {
 		rows.push(E('tr', {}, [
-			E('td', { 'colspan': 7, 'style': 'padding:24px;text-align:center;color:#a0aec0' },
-				[_('没有发现设备')])
+			E('td', {
+				'class': 'nd-empty', 'colspan': 7,
+				'style': 'padding:24px;text-align:center;color:var(--muted-text,#a0aec0)'
+			}, [_('没有发现设备')])
 		]));
 	}
 
@@ -425,13 +474,15 @@ function renderTable(data, flags, reload) {
 		E('div', { 'class': 'nd-section' }, [
 			E('h3', {}, [_('设备列表')]),
 			E('div', { 'class': 'body', 'style': 'padding:0' }, [
-				E('table', { 'class': 'nd-table' }, [
-					E('tr', {}, [
-						E('th', {}, [_('设备')]), E('th', {}, [_('IPv4')]), E('th', {}, [_('IPv6')]),
-						E('th', {}, [_('MAC')]), E('th', {}, [_('在线时长 / 上线时间')]),
-						E('th', {}, [_('限速')]), E('th', {}, [_('操作')])
-					])
-				].concat(rows))
+				E('div', { 'class': 'nd-scroll' }, [
+					E('table', { 'class': 'nd-table' }, [
+						E('tr', { 'class': 'nd-head' }, [
+							E('th', {}, [_('设备')]), E('th', {}, [_('IPv4')]), E('th', {}, [_('IPv6')]),
+							E('th', {}, [_('MAC')]), E('th', {}, [_('在线时长 / 上线时间')]),
+							E('th', {}, [_('限速')]), E('th', {}, [_('操作')])
+						])
+					].concat(rows))
+				])
 			])
 		])
 	]);
@@ -460,9 +511,7 @@ function renderCaps(c) {
 			row(truthy(c.nft) || truthy(c.fw4), _('防火墙 fw4 / nftables'), _('踢下线封锁（无 iptables/fw3）')),
 			row(truthy(c.iw), 'iw', _('WiFi 去关联（踢下线时用）')),
 			row(truthy(c.dhcp_release), 'dhcp_release', _('踢下线时立刻释放 DHCP 租约')),
-			E('div', {
-				'style': 'margin-top:12px;padding:8px 12px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px'
-			}, [_('✅ 无需安装额外软件包，缺组件时功能自动降级')])
+			E('div', { 'class': 'nd-hintbox' }, [_('✅ 无需安装额外软件包，缺组件时功能自动降级')])
 		])
 	]);
 }
@@ -519,7 +568,7 @@ function renderHelp(h) {
 		E('h3', {}, [_('📖 使用说明')]),
 		E('div', { 'class': 'body' }, sections.map(function (s) {
 			return E('div', { 'style': 'margin-bottom:14px' }, [
-				E('h4', { 'style': 'margin:0 0 6px;color:#2b6cb0;font-size:13px' }, [s.h]),
+				E('h4', {}, [s.h]),
 				E('ul', { 'style': 'margin:0 0 0 18px;padding:0' }, (s.items || []).map(function (t) {
 					return E('li', { 'style': 'line-height:1.8' }, [t]);
 				}))
