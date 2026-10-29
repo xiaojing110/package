@@ -1,0 +1,3 @@
+config settings 'settings'
+	option traffic '0'
+	option app_usage '0'

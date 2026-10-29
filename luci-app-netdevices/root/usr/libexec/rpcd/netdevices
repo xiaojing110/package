@@ -6,8 +6,9 @@
 #    status          设备列表（IPv4/IPv6/MAC/在线时长/上线时间/设备名/流量/封锁/限速）
 #    set_static      设置 DHCP 静态地址
 #    remove_static   移除静态地址
-#    kick            踢掉设备（MAC 封锁 + 踢 DHCP + WiFi 去关联）
+#    kick            踢掉设备（MAC 封锁 + 挡 DHCP 续租 + 踢 DHCP + WiFi 去关联）
 #    unkick          解除封锁
+#    release_lease   只释放 DHCP 租约（让设备重新申请地址）
 #    set_limit       设置网速限制（上行/下行 kbit/s）
 #    remove_limit    移除限速
 #    limits          当前限速列表
@@ -45,16 +46,31 @@ valid_mac() {
 }
 
 # 功能开关（0=关 1=开），默认全关
+# 优先读 /etc/config/netdevices（LuCI「保存 / 应用与保存」后跨重启生效），
+# 回落到 /tmp/netdevices/flags（旧版本/临时状态）
 flag_get() {
 	local v
-	v=$(cat "$FLAGS" 2>/dev/null | sed -n "s/^$1=//p" | head -1)
+	if command -v uci >/dev/null 2>&1; then
+		v=$(uci -q get "netdevices.settings.$1" 2>/dev/null)
+	fi
+	if [ -z "$v" ]; then
+		v=$(sed -n "s/^$1=//p" "$FLAGS" 2>/dev/null | head -1)
+	fi
 	[ -z "$v" ] && v=0
 	printf '%s' "$v"
 }
 flag_set() {
+	# 先写运行态缓存，保证立即生效
 	grep -v "^$1=" "$FLAGS" 2>/dev/null > "$FLAGS.t" || true
 	printf '%s=%s\n' "$1" "$2" >> "$FLAGS.t"
 	mv "$FLAGS.t" "$FLAGS"
+	# 再持久化到 uci，避免重启后实验功能又变回关闭
+	if command -v uci >/dev/null 2>&1; then
+		uci -q get netdevices.settings >/dev/null 2>&1 || \
+			uci -q set netdevices.settings='settings'
+		uci -q set "netdevices.settings.$1=$2"
+		uci -q commit netdevices >/dev/null 2>&1 || true
+	fi
 }
 
 leasetime_sec() {
@@ -83,7 +99,7 @@ static_dump() {
 	command -v uci >/dev/null 2>&1 || return 0
 	local i=0 mac
 	while :; do
-		mac=$(uci -q get dhcp.@host[$i].mac)
+		mac=$(uci -q get "dhcp.@host[$i].mac")
 		[ -z "$mac" ] && break
 		printf 'S|%s|%s|%s\n' "$(lower "$mac")" \
 			"$(uci -q get dhcp.@host[$i].ip)" "$(uci -q get dhcp.@host[$i].name)"
@@ -106,19 +122,19 @@ lookup_name() {
 tc_root_ensure() {
 	local dev="$1"
 	tc qdisc show dev "$dev" 2>/dev/null | grep -q "qdisc htb 1:" && return 0
-	tc qdisc add dev "$dev" root handle 1: htb default 999 2>/dev/null || true
-	tc class add dev "$dev" parent 1: classid 1:999 htb rate 10000mbit 2>/dev/null || true
+	tc qdisc add dev "$dev" root handle 1: htb default 999 >/dev/null 2>&1 || true
+	tc class add dev "$dev" parent 1: classid 1:999 htb rate 10000mbit >/dev/null 2>&1 || true
 }
 
 ifb_ensure() {
 	local dev="$1"
-	ip link show ifb0 >/dev/null 2>&1 || ip link add ifb0 type ifb 2>/dev/null || true
-	ip link set ifb0 up 2>/dev/null || true
+	ip link show ifb0 >/dev/null 2>&1 || ip link add ifb0 type ifb >/dev/null 2>&1 || true
+	ip link set ifb0 up >/dev/null 2>&1 || true
 	tc qdisc show dev "$dev" 2>/dev/null | grep -q "qdisc ingress" || \
-		tc qdisc add dev "$dev" handle ffff: ingress 2>/dev/null || true
+		tc qdisc add dev "$dev" handle ffff: ingress >/dev/null 2>&1 || true
 	tc filter show dev "$dev" parent ffff: 2>/dev/null | grep -q ifb0 || \
 		tc filter add dev "$dev" parent ffff: protocol all u32 match u32 0 0 \
-			action mirred egress redirect dev ifb0 2>/dev/null || true
+			action mirred egress redirect dev ifb0 >/dev/null 2>&1 || true
 	tc_root_ensure ifb0
 }
 
@@ -144,22 +160,22 @@ tc_class_set() {
 	cls=$(mac2class "$mac")
 	tc_root_ensure "$dev"
 	if [ -z "$kbit" ] || [ "$kbit" = "0" ]; then
-		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit 2>/dev/null || \
-			tc class add    dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit 2>/dev/null || true
+		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit >/dev/null 2>&1 || \
+			tc class add    dev "$dev" parent 1: classid "1:$cls" htb rate 10000mbit >/dev/null 2>&1 || true
 	else
-		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || \
-			tc class add    dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" 2>/dev/null || true
+		tc class replace dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" >/dev/null 2>&1 || \
+			tc class add    dev "$dev" parent 1: classid "1:$cls" htb rate "${kbit}kbit" ceil "${kbit}kbit" >/dev/null 2>&1 || true
 	fi
 	# filter 的 replace 在旧 iproute2 上没有，先删再加
-	tc filter del dev "$dev" parent 1: protocol all prio 1 u32 match ether src "$mac" flowid "1:$cls" 2>/dev/null || true
-	tc filter add dev "$dev" parent 1: protocol all prio 1 u32 match ether src "$mac" flowid "1:$cls" 2>/dev/null || true
+	tc filter del dev "$dev" parent 1: protocol all prio 1 u32 match ether src "$mac" flowid "1:$cls" >/dev/null 2>&1 || true
+	tc filter add dev "$dev" parent 1: protocol all prio 1 u32 match ether src "$mac" flowid "1:$cls" >/dev/null 2>&1 || true
 }
 
 tc_class_del() {
 	local dev="$1" mac="$2" cls
 	cls=$(mac2class "$mac")
-	tc filter del dev "$dev" parent 1: protocol all u32 match ether src "$mac" flowid "1:$cls" 2>/dev/null || true
-	tc class del dev "$dev" classid "1:$cls" 2>/dev/null || true
+	tc filter del dev "$dev" parent 1: protocol all u32 match ether src "$mac" flowid "1:$cls" >/dev/null 2>&1 || true
+	tc class del dev "$dev" classid "1:$cls" >/dev/null 2>&1 || true
 }
 
 # 读取某 class 的字节数（tc -s class show）
@@ -179,14 +195,38 @@ tc_bytes() {
 # ---------------- 封锁（踢掉设备）----------------
 nft_avail() { command -v nft >/dev/null 2>&1; }
 
+# 清掉该 MAC 的邻居表项：不改，设备会一直以「在线」留在列表里，
+# 看起来像「点了没反应」
+neigh_flush() {
+	local mac; mac=$(lower "$1")
+	ip neigh show 2>/dev/null | awk -v m="$mac" '
+		tolower($0) ~ m {
+			for (i = 1; i <= NF; i++)
+				if ($i == "dev") print $1, $(i + 1)
+		}
+	' | while read -r nip ndev; do
+		[ -n "$nip" ] || continue
+		if [ -n "$ndev" ]; then
+			ip neigh del "$nip" dev "$ndev" >/dev/null 2>&1 || true
+		else
+			ip neigh del "$nip" >/dev/null 2>&1 || true
+		fi
+	done
+}
+
 # 仅 fw4 / nftables：独立表，不污染 fw4；无 iptables / fw3
 nft_ensure() {
 	nft_avail || return 1
 	nft list table inet netdevices >/dev/null 2>&1 || \
-		nft add table inet netdevices 2>/dev/null || return 1
+		nft add table inet netdevices >/dev/null 2>&1 || return 1
 	nft list chain inet netdevices forward >/dev/null 2>&1 || \
 		nft add chain inet netdevices forward \
-			'{ type filter hook forward priority -10; policy accept; }' 2>/dev/null || return 1
+			'{ type filter hook forward priority -10; policy accept; }' >/dev/null 2>&1 || return 1
+	# input 链用来挡住 DHCP 续租（DHCP 报文是发给路由器本机的，
+	# 走 input 而不是 forward，只封 forward 时设备仍能拿到/续租地址）
+	nft list chain inet netdevices input >/dev/null 2>&1 || \
+		nft add chain inet netdevices input \
+			'{ type filter hook input priority -10; policy accept; }' >/dev/null 2>&1 || true
 	return 0
 }
 
@@ -194,42 +234,59 @@ ban_apply() {
 	local mac="$1"
 	if nft_ensure; then
 		nft -a list chain inet netdevices forward 2>/dev/null | grep -qi "$mac" && return 0
-		nft add rule inet netdevices forward ether saddr "$mac" counter drop 2>/dev/null || true
-		nft add rule inet netdevices forward ether daddr "$mac" counter drop 2>/dev/null || true
+		nft add rule inet netdevices forward ether saddr "$mac" counter drop >/dev/null 2>&1 || true
+		nft add rule inet netdevices forward ether daddr "$mac" counter drop >/dev/null 2>&1 || true
+		nft add rule inet netdevices input ether saddr "$mac" udp dport 67 counter drop >/dev/null 2>&1 || true
+		nft add rule inet netdevices input ether saddr "$mac" udp dport 68 counter drop >/dev/null 2>&1 || true
+		neigh_flush "$mac"
 		return 0
 	fi
 	if nft_avail && nft list table inet fw4 >/dev/null 2>&1; then
-		nft add rule inet fw4 forward ether saddr "$mac" counter drop 2>/dev/null || true
-		nft add rule inet fw4 forward ether daddr "$mac" counter drop 2>/dev/null || true
+		nft add rule inet fw4 forward ether saddr "$mac" counter drop >/dev/null 2>&1 || true
+		nft add rule inet fw4 forward ether daddr "$mac" counter drop >/dev/null 2>&1 || true
+		nft add rule inet fw4 input ether saddr "$mac" udp dport 67 counter drop >/dev/null 2>&1 || true
+		neigh_flush "$mac"
 		return 0
 	fi
 	return 1
 }
 
 ban_remove() {
-	local mac="$1"
+	local mac="$1" chain
 	nft_avail || return 0
-	nft -a list chain inet netdevices forward 2>/dev/null | \
-		grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
-			nft delete rule inet netdevices forward handle "$h" 2>/dev/null || true
-		done
-	nft -a list chain inet fw4 forward 2>/dev/null | \
-		grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
-			nft delete rule inet fw4 forward handle "$h" 2>/dev/null || true
-		done
+	for chain in forward input; do
+		nft -a list chain inet netdevices "$chain" 2>/dev/null | \
+			grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
+				nft delete rule inet netdevices "$chain" handle "$h" >/dev/null 2>&1 || true
+			done
+		nft -a list chain inet fw4 "$chain" 2>/dev/null | \
+			grep -i "$mac" | sed -n 's/.*handle \([0-9]*\).*/\1/p' | while read -r h; do
+				nft delete rule inet fw4 "$chain" handle "$h" >/dev/null 2>&1 || true
+			done
+	done
 	return 0
 }
 
 # 踢 DHCP + 让 dnsmasq 立刻丢掉该租约
+# 没有 dhcp_release 时仍然摘掉租约文件里的记录，并靠 input 链挡掉续租报文
 lease_drop() {
-	local mac="$1" ip="$2"
-	if command -v dhcp_release >/dev/null 2>&1 && [ -n "$ip" ]; then
-		local dev
-		dev=$(lan_if)
-		dhcp_release "$dev" "$ip" "$mac" 2>/dev/null || true
+	local mac ip dev had=0 rel=0
+	mac=$(lower "$1"); ip="$2"
+	[ -z "$ip" ] && ip=$(awk -v m="$mac" 'tolower($2)==m {print $3; exit}' "$LEASES" 2>/dev/null)
+	dev=$(lan_if)
+	grep -qi " $mac " "$LEASES" 2>/dev/null && had=1
+	if [ -n "$ip" ] && command -v dhcp_release >/dev/null 2>&1; then
+		dhcp_release "$dev" "$ip" "$mac" >/dev/null 2>&1 && rel=1
 	fi
-	awk -v m="$(lower "$mac")" 'tolower($2)!=m' "$LEASES" > "$LEASES.t" 2>/dev/null && mv "$LEASES.t" "$LEASES"
-	kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null || true
+	if [ -f "$LEASES" ]; then
+		awk -v m="$mac" 'tolower($2)!=m' "$LEASES" > "$LEASES.t" 2>/dev/null && mv "$LEASES.t" "$LEASES"
+	fi
+	if [ -f /var/run/dnsmasq.pid ]; then
+		kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" >/dev/null 2>&1 || true
+	else
+		killall -HUP dnsmasq >/dev/null 2>&1 || true
+	fi
+	[ "$rel" = "1" ] || [ "$had" = "1" ]
 }
 
 # WiFi 去关联（把设备从 AP 上踢下）
@@ -240,11 +297,11 @@ wifi_deauth() {
 	[ -n "$iw" ] || return 0
 	for d in $(ls /sys/class/net 2>/dev/null); do
 		[ -d "/sys/class/net/$d/wireless" ] || continue
-		"$iw" dev "$d" del_station "$mac" 2>/dev/null || true
+		"$iw" dev "$d" del_station "$mac" >/dev/null 2>&1 || true
 	done
 	# ubus hostapd 兜底
 	ubus list 2>/dev/null | grep '^hostapd\.' | while read -r o; do
-		ubus call "$o" del_client "{\"addr\":\"$mac\",\"deauth\":true,\"reason\":1}" 2>/dev/null || true
+		ubus call "$o" del_client "{\"addr\":\"$mac\",\"deauth\":true,\"reason\":1}" >/dev/null 2>&1 || true
 	done
 }
 
@@ -472,57 +529,98 @@ do_status() {
 }
 
 # 让 dnsmasq 立即读取新的静态租约（走系统默认 DHCP）
+# reload 只发 SIGHUP 重读 hosts 文件；失败时退化为 restart
 reload_dhcp() {
 	if [ -x /etc/init.d/dnsmasq ]; then
 		/etc/init.d/dnsmasq reload >/dev/null 2>&1 && return 0
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1 && return 0
 	fi
-	kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null || true
+	if [ -f /var/run/dnsmasq.pid ]; then
+		kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null && return 0
+	fi
+	killall -HUP dnsmasq 2>/dev/null && return 0
+	return 1
+}
+
+valid_ipv4() {
+	printf '%s' "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+	local IFS=. o
+	for o in $1; do
+		[ "$o" -le 255 ] >/dev/null 2>&1 || return 1
+	done
 	return 0
 }
 
 do_set_static() {
-	command -v uci >/dev/null 2>&1 || { printf '{"error":"uci not available"}'; return; }
-	local mac ip name i=0 existing sec
+	command -v uci >/dev/null 2>&1 || { printf '{"result":false,"error":"uci not available"}'; return; }
+	local mac ip name i=0 existing eip sec old_ip released=false reloaded=false
 	mac=$(lower "$1"); ip="$2"; name="$3"
-	[ -z "$mac" ] && { printf '{"error":"mac required"}'; return; }
-	[ -z "$ip" ]  && { printf '{"error":"ip required"}'; return; }
+	[ -z "$mac" ] && { printf '{"result":false,"error":"mac required"}'; return; }
+	[ -z "$ip" ]  && { printf '{"result":false,"error":"ip required"}'; return; }
+	valid_mac "$mac" || { printf '{"result":false,"error":"invalid mac"}'; return; }
+	valid_ipv4 "$ip" || { printf '{"result":false,"error":"invalid ipv4"}'; return; }
 
-	# 同 MAC 已存在则更新（走 dnsmasq 标准 config host）
+	# 同一 IP 已被别的 MAC 占用时拒绝，否则 dnsmasq 会静默忽略后写入的条目
 	while :; do
-		existing=$(uci -q get dhcp.@host[$i].mac)
+		existing=$(uci -q get "dhcp.@host[$i].mac")
 		[ -z "$existing" ] && break
-		if [ "$(lower "$existing")" = "$mac" ]; then
-			uci -q set dhcp.@host[$i].ip="$ip"
-			[ -n "$name" ] && uci -q set dhcp.@host[$i].name="$name"
-			uci -q set dhcp.@host[$i].dns="1"
-			uci -q commit dhcp
-			reload_dhcp
-			printf '{"result":true,"action":"updated","ip":"%s"}' "$ip"
+		eip=$(uci -q get "dhcp.@host[$i].ip")
+		if [ "$eip" = "$ip" ] && [ "$(lower "$existing")" != "$mac" ]; then
+			printf '{"result":false,"error":"ip already used by %s"}' "$(json_str "$existing")"
 			return
 		fi
-		i=$((i+1))
+		i=$((i + 1))
+	done
+
+	# 该 MAC 当前租约地址（写静态后立刻释放，设备续租就能拿到新地址）
+	old_ip=$(awk -v m="$mac" 'tolower($2)==m {print $3; exit}' "$LEASES" 2>/dev/null)
+
+	# 同 MAC 已存在则更新（走 dnsmasq 标准 config host）
+	i=0
+	while :; do
+		existing=$(uci -q get "dhcp.@host[$i].mac")
+		[ -z "$existing" ] && break
+		if [ "$(lower "$existing")" = "$mac" ]; then
+			uci -q set "dhcp.@host[$i].ip=$ip"
+			[ -n "$name" ] && uci -q set "dhcp.@host[$i].name=$name"
+			uci -q set "dhcp.@host[$i].dns=1"
+			uci -q commit dhcp || { printf '{"result":false,"error":"uci commit failed"}'; return; }
+			reload_dhcp && reloaded=true
+			if [ -n "$old_ip" ] && [ "$old_ip" != "$ip" ]; then
+				lease_drop "$mac" "$old_ip" && released=true
+			fi
+			printf '{"result":true,"action":"updated","ip":"%s","old_ip":"%s","reloaded":%s,"released":%s}' \
+				"$ip" "${old_ip:-}" "$reloaded" "$released"
+			return
+		fi
+		i=$((i + 1))
 	done
 
 	# 新增：用 uci add 返回的段名，比 @host[-1] 稳（后者并发时会指错）
 	sec=$(uci -q add dhcp host)
-	[ -z "$sec" ] && { printf '{"error":"failed to add dhcp host"}'; return; }
+	[ -z "$sec" ] && { printf '{"result":false,"error":"failed to add dhcp host"}'; return; }
 	uci -q set "dhcp.$sec.mac=$mac"
 	uci -q set "dhcp.$sec.ip=$ip"
 	[ -n "$name" ] && uci -q set "dhcp.$sec.name=$name"
 	uci -q set "dhcp.$sec.dns=1"
-	uci -q commit dhcp
-	reload_dhcp
-	printf '{"result":true,"action":"added","section":"%s","ip":"%s"}' "$sec" "$ip"
+	uci -q commit dhcp || { printf '{"result":false,"error":"uci commit failed"}'; return; }
+	reload_dhcp && reloaded=true
+	if [ -n "$old_ip" ]; then
+		lease_drop "$mac" "$old_ip" && released=true
+	fi
+	printf '{"result":true,"action":"added","section":"%s","ip":"%s","old_ip":"%s","reloaded":%s,"released":%s}' \
+		"$sec" "$ip" "${old_ip:-}" "$reloaded" "$released"
 }
 
 do_remove_static() {
-	command -v uci >/dev/null 2>&1 || { printf '{"error":"uci not available"}'; return; }
+	command -v uci >/dev/null 2>&1 || { printf '{"result":false,"error":"uci not available"}'; return; }
 	local mac i=0 existing
-	mac=$(lower "$1"); [ -z "$mac" ] && { printf '{"error":"mac required"}'; return; }
+	mac=$(lower "$1"); [ -z "$mac" ] && { printf '{"result":false,"error":"mac required"}'; return; }
 	while :; do
-		existing=$(uci -q get dhcp.@host[$i].mac); [ -z "$existing" ] && break
+		existing=$(uci -q get "dhcp.@host[$i].mac"); [ -z "$existing" ] && break
 		if [ "$(lower "$existing")" = "$mac" ]; then
-			uci -q delete dhcp.@host[$i]; uci -q commit dhcp
+			uci -q delete "dhcp.@host[$i]"
+			uci -q commit dhcp || { printf '{"result":false,"error":"uci commit failed"}'; return; }
 			reload_dhcp
 			printf '{"result":true}'; return
 		fi
@@ -533,25 +631,35 @@ do_remove_static() {
 
 # ---- 踢掉设备 ----
 do_kick() {
-	local mac ip name
+	local mac ip ok_ban=true ok_dhcp=true ok_wifi=true
 	mac=$(lower "$1"); ip="$2"
-	valid_mac "$mac" || { printf '{"error":"invalid mac"}'; return; }
+	valid_mac "$mac" || { printf '{"result":false,"error":"invalid mac"}'; return; }
 
 	grep -qi "^$mac$" "$BAN_LIST" 2>/dev/null || echo "$mac" >> "$BAN_LIST"
-	local ok_ban=1 ok_dhcp=1 ok_wifi=1
-	ban_apply "$mac" || ok_ban=0
-	lease_drop "$mac" "$ip"
-	wifi_deauth "$mac" >/dev/null 2>&1 || ok_wifi=0
 
-	printf '{"result":true,"ban":%s,"dhcp":%s,"wifi":%s}' \
-		"$([ $ok_ban -eq 1 ] && echo true || echo false)" \
-		"$([ $ok_dhcp -eq 1 ] && echo true || echo false)" \
-		"$([ $ok_wifi -eq 1 ] && echo true || echo false)"
+	ban_apply "$mac" || ok_ban=false
+	lease_drop "$mac" "$ip" || ok_dhcp=false
+	wifi_deauth "$mac" >/dev/null 2>&1 || ok_wifi=false
+	neigh_flush "$mac"
+
+	printf '{"result":true,"banned":true,"ban":%s,"dhcp":%s,"wifi":%s}' \
+		"$ok_ban" "$ok_dhcp" "$ok_wifi"
+}
+
+# ---- 只做 DHCP：释放租约让设备重新申请地址（静态地址改完想立刻生效时用）----
+do_release_lease() {
+	local mac ip
+	mac=$(lower "$1"); ip="$2"
+	valid_mac "$mac" || { printf '{"result":false,"error":"invalid mac"}'; return; }
+	[ -z "$ip" ] && ip=$(awk -v m="$mac" 'tolower($2)==m {print $3; exit}' "$LEASES" 2>/dev/null)
+	lease_drop "$mac" "$ip"
+	neigh_flush "$mac"
+	printf '{"result":true,"ip":"%s"}' "${ip:-}"
 }
 
 do_unkick() {
 	local mac
-	mac=$(lower "$1"); valid_mac "$mac" || { printf '{"error":"invalid mac"}'; return; }
+	mac=$(lower "$1"); valid_mac "$mac" || { printf '{"result":false,"error":"invalid mac"}'; return; }
 	ban_remove "$mac"
 	awk -v m="$mac" 'tolower($1)!=m' "$BAN_LIST" > "$BAN_LIST.t" 2>/dev/null && mv "$BAN_LIST.t" "$BAN_LIST"
 	printf '{"result":true}'
@@ -561,7 +669,7 @@ do_unkick() {
 do_set_limit() {
 	local mac down up
 	mac=$(lower "$1"); down="$2"; up="$3"
-	valid_mac "$mac" || { printf '{"error":"invalid mac"}'; return; }
+	valid_mac "$mac" || { printf '{"result":false,"error":"invalid mac"}'; return; }
 	# 不依赖 tc/kmod：有 tc 则下发，无则只存配置（代码层降级）
 	limit_set "$mac" "$down" "$up"
 	if command -v tc >/dev/null 2>&1; then
@@ -574,7 +682,7 @@ do_set_limit() {
 }
 do_remove_limit() {
 	local mac
-	mac=$(lower "$1"); valid_mac "$mac" || { printf '{"error":"invalid mac"}'; return; }
+	mac=$(lower "$1"); valid_mac "$mac" || { printf '{"result":false,"error":"invalid mac"}'; return; }
 	limit_del "$mac"
 	printf '{"result":true}'
 }
@@ -591,13 +699,18 @@ do_limits() {
 }
 
 # ---- 开关 ----
+# 返回布尔值（true/false），前端直接拿去更新开关状态
+bool_of() { [ "$1" = "1" ] && printf 'true' || printf 'false'; }
+
 do_set_flags() {
 	[ -n "$1" ] && flag_set traffic "$1"
 	[ -n "$2" ] && flag_set app_usage "$2"
-	printf '{"result":true,"traffic":%s,"app_usage":%s}' "$(flag_get traffic)" "$(flag_get app_usage)"
+	printf '{"result":true,"traffic":%s,"app_usage":%s,"saved":true}' \
+		"$(bool_of "$(flag_get traffic)")" "$(bool_of "$(flag_get app_usage)")"
 }
 do_flags() {
-	printf '{"result":{"traffic":%s,"app_usage":%s}}' "$(flag_get traffic)" "$(flag_get app_usage)"
+	printf '{"result":{"traffic":%s,"app_usage":%s}}' \
+		"$(bool_of "$(flag_get traffic)")" "$(bool_of "$(flag_get app_usage)")"
 }
 
 # ---- 【测试】app 使用记录 ----
@@ -629,13 +742,15 @@ do_help() {
     "上线时间：首次发现该设备的时间；无记录时回退到 DHCP 租约起始时间。",
     "状态：在线/离线，并附邻居表状态（REACHABLE / STALE / DELAY / PROBE 等）。"
   ]},
-  {"h":"设置静态地址","items":[
-    "点「设置静态地址」填入 IPv4 与可选设备名，会写入 /etc/config/dhcp 的 config host。",
-    "同一 MAC 重复设置会更新而不是新增；「移除」会删掉该项并 commit。",
+  {"h":"设置 DHCP 静态地址","items":[
+    "点「静态地址」填入 IPv4 与可选设备名，会写入 /etc/config/dhcp 的 config host 并重载 dnsmasq。",
+    "同一 MAC 重复设置会更新而不是新增；同一个 IP 已被别的 MAC 占用时会直接报错。",
+    "改完后如果设备还拿着旧地址，点「重新获取 IP」释放旧租约，设备会立刻重新申请。",
     "保存后 dnsmasq 会重新读取配置，设备续租时拿到固定地址。"
   ]},
   {"h":"踢掉设备","items":[
-    "点「踢下线」会做三件事：防火墙 MAC 封锁、清掉 DHCP 租约、把设备从 WiFi 上去关联。",
+    "点「踢下线」会做四件事：防火墙 MAC 封锁、挡住 DHCP 续租、清掉租约与邻居表、把设备从 WiFi 上去关联。",
+    "DHCP 报文是打到路由器本机的，走 input 链；这里单独用 inet netdevices input 丢掉 udp 67/68，避免设备被踢后还能续租。",
     "封锁后设备无法上网；重复点击是幂等的。",
     "点「解除封锁」会移除防火墙规则，设备重新联网即可。",
     "仅使用 fw4 / nftables：独立 inet netdevices 表。无 fw3 / iptables 依赖。"
@@ -674,6 +789,7 @@ case "$1" in
   "remove_static": { "mac": "String" },
   "kick": { "mac": "String", "ip": "String" },
   "unkick": { "mac": "String" },
+  "release_lease": { "mac": "String", "ip": "String" },
   "set_limit": { "mac": "String", "down": "String", "up": "String" },
   "remove_limit": { "mac": "String" },
   "limits": {},
@@ -686,15 +802,18 @@ case "$1" in
 EOF
 		;;
 	call)
-		[ -t 0 ] || IN=$(cat)
-		# 取参：优先 jsonfilter，缺失时用 sed 兑底（避免单点故障）
+		# 参数来源：rpcd 走 stdin；个别版本/手工调用会把 JSON 放在 $3
+		IN=$(cat 2>/dev/null || true)
+		if [ -z "$IN" ] && [ -n "${3:-}" ]; then IN="$3"; fi
+		if [ -z "$IN" ] && [ -n "${4:-}" ]; then IN="$4"; fi
+		# 取参：优先 jsonfilter，缺失时用 sed 兜底（避免单点故障）
 		jget() {
 			local v
 			v=$(printf '%s' "$IN" | jsonfilter -e "@.$1" 2>/dev/null)
-			if [ -z "$v" ]; then
+			if [ -z "$v" ] || [ "$v" = "null" ]; then
 				v=$(printf '%s' "$IN" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 			fi
-			if [ -z "$v" ]; then
+			if [ -z "$v" ] || [ "$v" = "null" ]; then
 				v=$(printf '%s' "$IN" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
 			fi
 			printf '%s' "$v"
@@ -705,6 +824,7 @@ EOF
 			remove_static)  do_remove_static "$(jget mac)" ;;
 			kick)           do_kick          "$(jget mac)" "$(jget ip)" ;;
 			unkick)         do_unkick        "$(jget mac)" ;;
+			release_lease)  do_release_lease "$(jget mac)" "$(jget ip)" ;;
 			set_limit)      do_set_limit     "$(jget mac)" "$(jget down)" "$(jget up)" ;;
 			remove_limit)   do_remove_limit  "$(jget mac)" ;;
 			limits)         do_limits ;;
@@ -713,7 +833,7 @@ EOF
 			app_usage)      do_app_usage     "$(jget mac)" "$(jget ip)" ;;
 			caps)           do_caps ;;
 			help)           do_help ;;
-			*)              printf '{"error":"unknown method"}' ;;
+			*)              printf '{"result":false,"error":"unknown method"}' ;;
 		esac
 		;;
 	*)

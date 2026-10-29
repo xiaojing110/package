@@ -3,17 +3,25 @@
 'require rpc';
 'require ui';
 
-var callStatus      = rpc.declare({ object: 'netdevices', method: 'status',         expect: { 'result': [] } });
-var callSetStatic   = rpc.declare({ object: 'netdevices', method: 'set_static',     params: ['mac', 'ip', 'name'],        expect: { 'result': true } });
-var callRemoveStatic= rpc.declare({ object: 'netdevices', method: 'remove_static',  params: ['mac'],                      expect: { 'result': true } });
-var callKick        = rpc.declare({ object: 'netdevices', method: 'kick',           params: ['mac', 'ip'],                expect: { 'result': true } });
-var callUnkick      = rpc.declare({ object: 'netdevices', method: 'unkick',         params: ['mac'],                      expect: { 'result': true } });
-var callSetLimit    = rpc.declare({ object: 'netdevices', method: 'set_limit',      params: ['mac', 'down', 'up'],        expect: { 'result': true } });
-var callRemoveLimit = rpc.declare({ object: 'netdevices', method: 'remove_limit',   params: ['mac'],                      expect: { 'result': true } });
-var callSetFlags    = rpc.declare({ object: 'netdevices', method: 'set_flags',      params: ['traffic', 'app_usage'],     expect: { 'result': true } });
-var callAppUsage    = rpc.declare({ object: 'netdevices', method: 'app_usage',      params: ['mac', 'ip'],                expect: { 'result': [] } });
-var callCaps        = rpc.declare({ object: 'netdevices', method: 'caps',           expect: { 'result': {} } });
-var callHelp        = rpc.declare({ object: 'netdevices', method: 'help',           expect: { 'result': {} } });
+/*
+ * 统一的 RPC 声明：用 expect: { '': { result: ... } } 拿「完整回包对象」。
+ * 旧写法 expect: { result: [] } 会把 result 直接解包出来，导致：
+ *   - status 的 flags 丢失 → 实验功能永远显示未开启；
+ *   - kick / set_static 失败时拿不到 error → 看起来像“点了没反应”。
+ * 取完整对象后既能拿到 result，也能拿到 error / flags / ban / dhcp / wifi。
+ */
+var callStatus       = rpc.declare({ object: 'netdevices', method: 'status',        expect: { '': { result: [] } } });
+var callSetStatic    = rpc.declare({ object: 'netdevices', method: 'set_static',    params: ['mac', 'ip', 'name'],     expect: { '': { result: true } } });
+var callRemoveStatic = rpc.declare({ object: 'netdevices', method: 'remove_static', params: ['mac'],                   expect: { '': { result: true } } });
+var callKick         = rpc.declare({ object: 'netdevices', method: 'kick',          params: ['mac', 'ip'],             expect: { '': { result: true } } });
+var callUnkick       = rpc.declare({ object: 'netdevices', method: 'unkick',        params: ['mac'],                   expect: { '': { result: true } } });
+var callReleaseLease = rpc.declare({ object: 'netdevices', method: 'release_lease', params: ['mac', 'ip'],             expect: { '': { result: true } } });
+var callSetLimit     = rpc.declare({ object: 'netdevices', method: 'set_limit',     params: ['mac', 'down', 'up'],     expect: { '': { result: true } } });
+var callRemoveLimit  = rpc.declare({ object: 'netdevices', method: 'remove_limit',  params: ['mac'],                   expect: { '': { result: true } } });
+var callSetFlags     = rpc.declare({ object: 'netdevices', method: 'set_flags',     params: ['traffic', 'app_usage'],  expect: { '': { result: true } } });
+var callAppUsage     = rpc.declare({ object: 'netdevices', method: 'app_usage',     params: ['mac', 'ip'],             expect: { '': { result: [] } } });
+var callCaps         = rpc.declare({ object: 'netdevices', method: 'caps',          expect: { '': { result: {} } } });
+var callHelp         = rpc.declare({ object: 'netdevices', method: 'help',          expect: { '': { result: {} } } });
 
 var autoTimer = null;
 
@@ -21,7 +29,6 @@ var autoTimer = null;
 var flagState = { traffic: false, app_usage: false };
 var flagSaved = { traffic: false, app_usage: false };
 var flagDirty = false;
-
 
 /* ---------------- 样式 ---------------- */
 var CSS = [
@@ -44,6 +51,7 @@ var CSS = [
 	'.nd-btn:hover{opacity:.82}',
 	'.nd-b-blue{background:#3182ce}.nd-b-green{background:#38a169}.nd-b-red{background:#e53e3e}',
 	'.nd-b-orange{background:#dd6b20}.nd-b-gray{background:#718096}.nd-b-purple{background:#805ad5}',
+	'.nd-b-teal{background:#319795}',
 	'.nd-section{background:#fff;border:1px solid #e2e8f0;border-radius:8px;margin:12px 0;overflow:hidden}',
 	'.nd-section>h3{margin:0;padding:10px 14px;background:#f7fafc;border-bottom:1px solid #e2e8f0;',
 	'font-size:14px;color:#2d3748}',
@@ -111,16 +119,38 @@ function tag(txt, cls) {
 	return E('span', { 'class': 'nd-tag ' + cls }, [txt]);
 }
 
+/* true / 1 / '1' 都当作开启（后端不同版本返回值类型不一致） */
+function truthy(v) {
+	return v === true || v === 1 || v === '1' || v === 'true';
+}
+
+/* RPC 回包是否成功：{result:false} 或 {error:"..."} 都算失败 */
+function replyOk(r) {
+	return !!r && r.result !== false && !r.error;
+}
+
+function replyError(r) {
+	if (!r) return _('后端没有返回数据');
+	if (r.error) return String(r.error);
+	if (r.result === false) return _('操作被拒绝');
+	return _('未知错误');
+}
+
 /* ---------------- 弹窗 ---------------- */
 function modal(title, body, okLabel, onOk) {
 	ui.showModal(title, body, [
 		{
 			'label': okLabel, 'class': 'btn cbi-button cbi-button-positive',
-			'click': ui.createHandlerFn(this, function () {
-				return Promise.resolve(onOk()).then(function () { ui.hideModal(); });
+			'click': ui.createHandlerFn(null, function () {
+				/* 成功才关窗；失败把原因弹出来，避免“点了没反应” */
+				return Promise.resolve().then(onOk).then(function () {
+					ui.hideModal();
+				}).catch(function (e) {
+					notify(_('操作失败：') + (e && e.message ? e.message : e));
+				});
 			})
 		},
-		{ 'label': _('取消'), 'class': 'btn cbi-button', 'click': ui.hideModal }
+		{ 'label': _('取消'), 'class': 'btn cbi-button', 'click': function () { ui.hideModal(); } }
 	]);
 }
 
@@ -147,16 +177,46 @@ function notify(msg, ok) {
 function doStatic(d, reload) {
 	var ipEl = textInput((d.ip4 || '').split(',')[0], '192.168.1.100');
 	var nmEl = textInput(d.name, _('设备名（可选）'));
-	modal(_('设置静态地址'), E('div', {}, [
+	modal(_('设置 DHCP 静态地址'), E('div', {}, [
 		inputRow(_('MAC 地址'), E('div', { 'class': 'nd-mono' }, [d.mac])),
-		inputRow(_('IPv4 静态地址'), ipEl, _('保存后 dnsmasq 重新读取，设备续租时拿到固定地址')),
-		inputRow(_('设备名'), nmEl)
+		inputRow(_('IPv4 静态地址'), ipEl, _('写入 /etc/config/dhcp 的 config host，并重载 dnsmasq')),
+		inputRow(_('设备名'), nmEl),
+		E('div', { 'class': 'nd-muted' }, [
+			_('保存后如果设备还拿着旧地址，点设备行里的「重新获取 IP」释放旧租约即可立刻生效。')
+		])
 	]), d.is_static ? _('更新') : _('保存'), function () {
 		var ip = ipEl.value.trim();
-		if (!ip) { notify(_('请输入 IPv4 地址')); return; }
-		return callSetStatic(d.mac, ip, nmEl.value.trim()).then(function () {
-			notify(_('静态地址已保存'), true); reload();
+		if (!ip) { throw new Error(_('请输入 IPv4 地址')); }
+		if (!/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip)) { throw new Error(_('IPv4 地址格式不正确')); }
+		return callSetStatic(d.mac, ip, nmEl.value.trim()).then(function (r) {
+			if (!replyOk(r)) { throw new Error(replyError(r)); }
+			var extra = [];
+			if (r.reloaded === false) extra.push(_('dnsmasq 未能重载'));
+			if (r.released) extra.push(_('已释放旧租约'));
+			notify(_('静态地址已保存') + (extra.length ? '，' + extra.join('，') : ''), true);
+			reload();
 		});
+	});
+}
+
+function doRemoveStatic(d, reload) {
+	return callRemoveStatic(d.mac).then(function (r) {
+		if (!replyOk(r)) { notify(_('移除静态地址失败：') + replyError(r)); return; }
+		notify(_('已移除静态地址'), true);
+		reload();
+	}).catch(function (e) {
+		notify(_('移除静态地址失败：') + (e && e.message ? e.message : e));
+	});
+}
+
+/* DHCP：释放租约，让设备重新申请地址（改完静态地址想立刻生效时用） */
+function doReleaseLease(d, reload) {
+	return callReleaseLease(d.mac, (d.ip4 || '').split(',')[0]).then(function (r) {
+		if (!replyOk(r)) { notify(_('释放租约失败：') + replyError(r)); return; }
+		notify(_('已请求设备重新获取 IP（原地址 %s）').format(r.ip || '-'), true);
+		reload();
+	}).catch(function (e) {
+		notify(_('释放租约失败：') + (e && e.message ? e.message : e));
 	});
 }
 
@@ -167,16 +227,28 @@ function doKick(d, reload) {
 			'class': 'nd-mono', 'style': 'background:#fed7d7;padding:8px;border-radius:5px;margin:8px 0'
 		}, [(d.name ? d.name + '  ·  ' : '') + d.mac + (d.ip4 ? '  ·  ' + d.ip4 : '')]),
 		E('p', { 'class': 'nd-muted' }, [
-			_('会执行：① 防火墙 MAC 封锁　② 清掉 DHCP 租约　③ WiFi 去关联。设备将无法上网。')
+			_('会执行：① 防火墙 MAC 封锁　② 挡住 DHCP 续租　③ 清租约/邻居表　④ WiFi 去关联。设备将无法上网。')
 		])
 	]), _('确认踢下线'), function () {
 		return callKick(d.mac, (d.ip4 || '').split(',')[0]).then(function (r) {
+			if (!replyOk(r)) { throw new Error(replyError(r)); }
 			var bits = [];
-			if (r && r.ban === false) bits.push(_('防火墙规则失败（缺 nft/fw4）'));
-			if (r && r.wifi === false) bits.push(_('WiFi 去关联失败'));
+			if (r.ban === false) bits.push(_('防火墙封锁失败（缺 nft / fw4）'));
+			if (r.dhcp === false) bits.push(_('DHCP 租约未清掉（无 dhcp_release 且无租约记录）'));
+			if (r.wifi === false) bits.push(_('WiFi 去关联失败'));
 			notify(bits.length ? _('已处理，但：') + bits.join('；') : _('设备已踢下线'), bits.length ? false : true);
 			reload();
 		});
+	});
+}
+
+function doUnkick(d, reload) {
+	return callUnkick(d.mac).then(function (r) {
+		if (!replyOk(r)) { notify(_('解除封锁失败：') + replyError(r)); return; }
+		notify(_('已解除封锁'), true);
+		reload();
+	}).catch(function (e) {
+		notify(_('解除封锁失败：') + (e && e.message ? e.message : e));
 	});
 }
 
@@ -192,17 +264,27 @@ function doLimit(d, reload) {
 			E('br'), _('限速基于内核 tc HTB/ifb；系统无 tc 时仅保存配置，不依赖额外软件包')
 		])
 	]), _('保存'), function () {
-		return callSetLimit(d.mac, downEl.value.trim() || '0', upEl.value.trim() || '0').then(function () {
-			notify(_('限速已生效'), true); reload();
-		}).catch(function (e) {
-			notify(_('限速失败：') + (e && e.message ? e.message : e));
+		return callSetLimit(d.mac, downEl.value.trim() || '0', upEl.value.trim() || '0').then(function (r) {
+			if (!replyOk(r)) { throw new Error(replyError(r)); }
+			notify(r.applied === false ? _('限速已保存（系统缺 tc，未下发）') : _('限速已生效'), true);
+			reload();
 		});
+	});
+}
+
+function doRemoveLimit(d, reload) {
+	return callRemoveLimit(d.mac).then(function (r) {
+		if (!replyOk(r)) { notify(_('移除限速失败：') + replyError(r)); return; }
+		notify(_('已移除限速'), true);
+		reload();
+	}).catch(function (e) {
+		notify(_('移除限速失败：') + (e && e.message ? e.message : e));
 	});
 }
 
 function doAppUsage(d) {
 	callAppUsage(d.mac, (d.ip4 || '').split(',')[0]).then(function (r) {
-		var list = (r && r.result) ? r.result : (Array.isArray(r) ? r : []);
+		var list = (r && Array.isArray(r.result)) ? r.result : [];
 		var rows = list.map(function (x) {
 			return E('tr', {}, [
 				E('td', { 'style': 'padding:5px 8px' }, [x.service]),
@@ -220,8 +302,10 @@ function doAppUsage(d) {
 					E('th', { 'style': 'text-align:right' }, [_('连接数')]),
 					E('th', { 'style': 'text-align:right' }, [_('流量')])
 				])
-			].concat(rows)) : E('p', { 'class': 'nd-muted' }, [_('暂无数据（需先在「实验功能」里打开 App 使用记录）')])
-		]), [{ 'label': _('关闭'), 'class': 'btn cbi-button', 'click': ui.hideModal }]);
+			].concat(rows)) : E('p', { 'class': 'nd-muted' }, [_('暂无数据（需先在「实验功能」里打开 App 使用记录并保存）')])
+		]), [{ 'label': _('关闭'), 'class': 'btn cbi-button', 'click': function () { ui.hideModal(); } }]);
+	}).catch(function (e) {
+		notify(_('读取 App 记录失败：') + (e && e.message ? e.message : e));
 	});
 }
 
@@ -236,25 +320,30 @@ function renderTable(data, flags, reload) {
 
 	var rows = list.map(function (d) {
 		var ops = [];
-		ops.push(E('button', { 'class': 'nd-btn nd-b-blue',  'click': ui.createHandlerFn(this, function () { doStatic(d, reload); }) },
+		ops.push(E('button', { 'class': 'nd-btn nd-b-blue', 'click': function () { doStatic(d, reload); } },
 			[d.is_static ? _('改静态') : _('静态地址')]));
+		if (d.is_static) {
+			ops.push(E('button', { 'class': 'nd-btn nd-b-gray', 'click': function () { doRemoveStatic(d, reload); } },
+				[_('移除静态')]));
+		}
+		/* DHCP 动作：释放租约，让设备立刻重新申请（静态地址改完常用） */
+		ops.push(E('button', { 'class': 'nd-btn nd-b-teal', 'click': function () { doReleaseLease(d, reload); } },
+			[_('重新获取 IP')]));
 		if (d.banned) {
-			ops.push(E('button', { 'class': 'nd-btn nd-b-green', 'click': ui.createHandlerFn(this, function () {
-				return callUnkick(d.mac).then(function () { notify(_('已解除封锁'), true); reload(); });
-			}) }, [_('解除封锁')]));
+			ops.push(E('button', { 'class': 'nd-btn nd-b-green', 'click': function () { doUnkick(d, reload); } },
+				[_('解除封锁')]));
 		} else {
-			ops.push(E('button', { 'class': 'nd-btn nd-b-red', 'click': ui.createHandlerFn(this, function () { doKick(d, reload); }) },
+			ops.push(E('button', { 'class': 'nd-btn nd-b-red', 'click': function () { doKick(d, reload); } },
 				[_('踢下线')]));
 		}
-		ops.push(E('button', { 'class': 'nd-btn nd-b-orange', 'click': ui.createHandlerFn(this, function () { doLimit(d, reload); }) },
+		ops.push(E('button', { 'class': 'nd-btn nd-b-orange', 'click': function () { doLimit(d, reload); } },
 			[d.limit_down > 0 ? _('改限速') : _('限速')]));
 		if (d.limit_down > 0 || d.limit_up > 0) {
-			ops.push(E('button', { 'class': 'nd-btn nd-b-gray', 'click': ui.createHandlerFn(this, function () {
-				return callRemoveLimit(d.mac).then(function () { notify(_('已移除限速'), true); reload(); });
-			}) }, [_('不限速')]));
+			ops.push(E('button', { 'class': 'nd-btn nd-b-gray', 'click': function () { doRemoveLimit(d, reload); } },
+				[_('不限速')]));
 		}
-		if (flags && flags.app_usage) {
-			ops.push(E('button', { 'class': 'nd-btn nd-b-purple', 'click': ui.createHandlerFn(this, function () { doAppUsage(d); }) },
+		if (flags && truthy(flags.app_usage)) {
+			ops.push(E('button', { 'class': 'nd-btn nd-b-purple', 'click': function () { doAppUsage(d); } },
 				[_('App 记录')]));
 		}
 
@@ -265,7 +354,7 @@ function renderTable(data, flags, reload) {
 		if (d.is_static) tags.push(tag(_('静态'), 'nd-lim'));
 
 		var traffic = null;
-		if (flags && flags.traffic) {
+		if (flags && truthy(flags.traffic)) {
 			var tot = (parseInt(d.rx_bytes) || 0) + (parseInt(d.tx_bytes) || 0);
 			traffic = E('div', { 'style': 'margin-top:3px' }, [
 				E('div', { 'class': 'nd-muted' }, [
@@ -330,7 +419,7 @@ function renderTable(data, flags, reload) {
 			card(ban, _('已封锁'), '#dd6b20'),
 			card(lim, _('已限速'), '#805ad5'),
 			E('div', { 'class': 'nd-card', 'style': 'flex:0 0 auto;display:flex;align-items:center' }, [
-				E('button', { 'class': 'nd-btn nd-b-blue', 'click': ui.createHandlerFn(this, reload) }, [_('🔄 刷新')])
+				E('button', { 'class': 'nd-btn nd-b-blue', 'click': function () { reload(); } }, [_('🔄 刷新')])
 			])
 		]),
 		E('div', { 'class': 'nd-section' }, [
@@ -365,12 +454,12 @@ function renderCaps(c) {
 			E('div', { 'class': 'nd-muted', 'style': 'margin-bottom:8px' }, [
 				_('仅报告状态，不依赖额外软件包。防火墙使用 fw4/nft；限速有 tc 则用。')
 			]),
-			row(c.tc, 'tc', _('限速 / 流量统计（有则启用，无则降级）')),
+			row(truthy(c.tc), 'tc', _('限速 / 流量统计（有则启用，无则降级）')),
 			row(true, 'HTB / u32', _('内核内置，无需安装')),
-			row(c.ifb, 'ifb0', _('下行限速（可用时自动创建）')),
-			row(c.nft || c.fw4, _('防火墙 fw4 / nftables'), _('踢下线封锁（无 iptables/fw3）')),
-			row(c.iw, 'iw', _('WiFi 去关联（踢下线时用）')),
-			row(c.dhcp_release, 'dhcp_release', _('踢下线时立刻释放租约')),
+			row(truthy(c.ifb), 'ifb0', _('下行限速（可用时自动创建）')),
+			row(truthy(c.nft) || truthy(c.fw4), _('防火墙 fw4 / nftables'), _('踢下线封锁（无 iptables/fw3）')),
+			row(truthy(c.iw), 'iw', _('WiFi 去关联（踢下线时用）')),
+			row(truthy(c.dhcp_release), 'dhcp_release', _('踢下线时立刻释放 DHCP 租约')),
 			E('div', {
 				'style': 'margin-top:12px;padding:8px 12px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px'
 			}, [_('✅ 无需安装额外软件包，缺组件时功能自动降级')])
@@ -379,6 +468,11 @@ function renderCaps(c) {
 }
 
 /* ---------------- 实验功能开关 ---------------- */
+function updateDirtyTag() {
+	var hint = document.getElementById('nd-dirty');
+	if (hint) hint.style.display = flagDirty ? 'inline-block' : 'none';
+}
+
 function renderFlags(reload) {
 	function sw(key, label, desc) {
 		var cb = E('input', { 'type': 'checkbox' });
@@ -387,9 +481,7 @@ function renderFlags(reload) {
 			flagState[key] = cb.checked;
 			flagDirty = (flagState.traffic !== flagSaved.traffic) ||
 			            (flagState.app_usage !== flagSaved.app_usage);
-			// 高亮“未保存”提示
-			var hint = document.getElementById('nd-dirty');
-			if (hint) hint.style.display = flagDirty ? 'inline-block' : 'none';
+			updateDirtyTag();
 		});
 		return E('div', { 'class': 'nd-switch' }, [
 			cb,
@@ -414,7 +506,7 @@ function renderFlags(reload) {
 			sw('traffic', _('流量统计'), _('统计每台设备的上行/下行字节数（来自 tc 计数器，重启后从零开始）')),
 			sw('app_usage', _('App 使用记录'), _('按目标端口粗分服务类型（HTTPS/DNS/邮件/IoT/推送/流媒体等），无法识别具体 App 名')),
 			E('div', { 'class': 'nd-muted', 'style': 'margin-top:8px' }, [
-				_('改动后请点右下角的「保存」或「应用与保存」生效；「重置」恢复为上次保存的状态。')
+				_('改动后请点页面右下角的「保存」或「应用与保存」提交；「重置」恢复为上次保存的状态。')
 			])
 		])
 	]);
@@ -457,17 +549,18 @@ function load() {
 		callCaps().catch(function () { return {}; })
 	]).then(function (r) {
 		var st = r[0] || {};
-		var data = st.result || (Array.isArray(st) ? st : []);
+		var data = Array.isArray(st.result) ? st.result : [];
 		var flags = st.flags || {};
-		// 首次加载时把远端开关同步到本地；之后勾选只改本地
+		/* 首次加载时把远端开关同步到本地；有未保存改动时不覆盖 */
 		if (!flagDirty) {
-			flagState.traffic = !!flags.traffic;
-			flagState.app_usage = !!flags.app_usage;
+			flagState.traffic = truthy(flags.traffic);
+			flagState.app_usage = truthy(flags.app_usage);
 			flagSaved.traffic = flagState.traffic;
 			flagSaved.app_usage = flagState.app_usage;
 		}
-		renderAll(data, flags, r[1] && r[1].result ? r[1].result : r[1],
-		          r[2] && r[2].result ? r[2].result : r[2]);
+		renderAll(data, flags,
+		          (r[1] && r[1].result) ? r[1].result : r[1],
+		          (r[2] && r[2].result) ? r[2].result : r[2]);
 	}).catch(function (e) {
 		var msg = (e && e.message) ? e.message : String(e);
 		var isObj = /Object not found|-32000/i.test(msg);
@@ -482,7 +575,8 @@ function load() {
 					E('li', {}, [_('检查权限：'), E('code', {}, ['chmod 755 /usr/libexec/rpcd/netdevices'])]),
 					E('li', {}, [_('CRLF 会导致 sh 无法执行，必要时：'),
 						E('code', {}, ['dos2unix /usr/libexec/rpcd/netdevices'])]),
-					E('li', {}, [_('手动验证：'), E('code', {}, ['/usr/libexec/rpcd/netdevices list'])])
+					E('li', {}, [_('手动验证：'), E('code', {}, ['/usr/libexec/rpcd/netdevices list'])]),
+					E('li', {}, [_('新装/升级插件后必须 restart（reload 不会重新扫描 rpcd 插件）')])
 				]) : null
 			])
 		]);
@@ -491,12 +585,18 @@ function load() {
 	});
 }
 
+/* 把开关提交到后端，并用后端回包刷新本地已保存状态 */
 function commitFlags() {
 	return callSetFlags(flagState.traffic ? '1' : '0',
-	                    flagState.app_usage ? '1' : '0').then(function () {
-		flagSaved.traffic = flagState.traffic;
-		flagSaved.app_usage = flagState.app_usage;
+	                    flagState.app_usage ? '1' : '0').then(function (r) {
+		if (!replyOk(r)) throw new Error(replyError(r));
+		flagSaved.traffic = truthy(r.traffic);
+		flagSaved.app_usage = truthy(r.app_usage);
+		flagState.traffic = flagSaved.traffic;
+		flagState.app_usage = flagSaved.app_usage;
 		flagDirty = false;
+		updateDirtyTag();
+		return r;
 	});
 }
 
@@ -510,17 +610,22 @@ return view.extend({
 		}
 		return commitFlags().then(function () {
 			ui.addNotification(null, E('p', {}, _('已保存')), 'info');
-			var hint = document.getElementById('nd-dirty');
-			if (hint) hint.style.display = 'none';
+			/* 立即按新的开关状态重画（流量列 / App 记录按钮） */
+			return load();
+		}).catch(function (e) {
+			notify(_('保存失败：') + (e && e.message ? e.message : e));
 		});
 	},
 
 	/* 应用与保存：落盘 + 刷新设备数据 */
 	handleSaveApply: function (ev) {
 		if (ev) ev.preventDefault();
-		return (flagDirty ? commitFlags() : Promise.resolve()).then(function () {
+		var task = flagDirty ? commitFlags() : Promise.resolve();
+		return task.then(function () {
 			ui.addNotification(null, E('p', {}, _('已保存并应用')), 'info');
 			return load();
+		}).catch(function (e) {
+			notify(_('保存失败：') + (e && e.message ? e.message : e));
 		});
 	},
 
@@ -543,12 +648,23 @@ return view.extend({
 			])
 		]);
 		if (autoTimer) clearInterval(autoTimer);
-		autoTimer = setInterval(load, 30000);
+		/* 30 秒自动刷新；页面被切走后自己停掉，避免后台常驻轮询 */
+		autoTimer = setInterval(function () {
+			if (rootEl && document.body && !document.body.contains(rootEl)) {
+				clearInterval(autoTimer);
+				autoTimer = null;
+				return;
+			}
+			load();
+		}, 30000);
 		load();
 		return rootEl;
 	},
 
+	/* 渲染基类页脚（「保存 / 应用与保存 / 重置」三个按钮）。
+	 * 之前这里整个覆盖成空实现，导致页脚压根不出现，
+	 * 实验功能只能勾选、没法保存，一直显示「未保存」。 */
 	addFooter: function () {
-		if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+		return view.prototype.addFooter.call(this);
 	}
 });

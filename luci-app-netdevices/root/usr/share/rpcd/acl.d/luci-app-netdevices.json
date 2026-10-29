@@ -5,13 +5,13 @@
 			"ubus": {
 				"netdevices": [ "status", "limits", "flags", "app_usage", "caps", "help" ]
 			},
-			"uci": [ "dhcp" ]
+			"uci": [ "dhcp", "netdevices" ]
 		},
 		"write": {
 			"ubus": {
-				"netdevices": [ "set_static", "remove_static", "kick", "unkick", "set_limit", "remove_limit", "set_flags" ]
+				"netdevices": [ "set_static", "remove_static", "kick", "unkick", "release_lease", "set_limit", "remove_limit", "set_flags" ]
 			},
-			"uci": [ "dhcp" ]
+			"uci": [ "dhcp", "netdevices" ]
 		}
 	}
 }

@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-netdevices
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=netdevices
@@ -25,6 +25,12 @@ define Package/$(PKG_NAME)/postinst
 chmod 755 /usr/libexec/rpcd/netdevices 2>/dev/null || true
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 exit 0
+endef
+
+# 实验功能开关（流量统计 / App 使用记录）持久化在这里，
+# 这样 LuCI 里点「保存 / 应用与保存」后重启仍然生效。
+define Package/$(PKG_NAME)/conffiles
+/etc/config/netdevices
 endef
 
 include $(TOPDIR)/feeds/luci/luci.mk
