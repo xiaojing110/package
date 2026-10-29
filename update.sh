@@ -9,7 +9,6 @@
 #                   三种策略：
 #                     tarball : 源码包，自动 PKG_VERSION + PKG_HASH
 #                     assets  : 预编译资源 / 多架构二进制 / geodata，逐个算 hash
-#                     commit  : 跟踪分支 HEAD，写 PKG_SOURCE_VERSION + PKG_HASH（可选试打补丁）
 #                     notify  : 只提醒上游有新版（源码内嵌或 git-commit 型，不自动改）
 #
 #  用法：
@@ -910,183 +909,6 @@ EOF
   return 0
 }
 
-# ---------- 可选：对包目录下 patches/ 做一次试打 ----------
-# verify_package_patches <makefile路径> <repo> <commit_sha>
-#   成功返回 0；有补丁打不上返回 1
-verify_package_patches() {
-  local makefile="$1" repo="$2" sha="$3"
-  local pkg_dir patches_dir
-  pkg_dir="$(dirname "$makefile")"
-  patches_dir="${pkg_dir}/patches"
-  [[ -d "$patches_dir" ]] || return 0
-
-  local url="https://codeload.github.com/${repo}/tar.gz/${sha}"
-  local tmp_tar work p
-  tmp_tar=$(mktemp --suffix=.tar.gz)
-  work=$(mktemp -d)
-
-  if ! curl -sL --fail --retry 3 --retry-delay 2 \
-       --connect-timeout 20 --max-time 300 \
-       -A "github-release-monitor" -o "$tmp_tar" "$url"; then
-    log "[失败] 补丁校验：下载源码失败 ${url}"
-    rm -f "$tmp_tar"; rm -rf "$work"
-    return 1
-  fi
-  if ! tar xzf "$tmp_tar" -C "$work" --strip-components=1 2>/dev/null; then
-    log "[失败] 补丁校验：解压失败"
-    rm -f "$tmp_tar"; rm -rf "$work"
-    return 1
-  fi
-  rm -f "$tmp_tar"
-
-  shopt -s nullglob
-  local patches=("$patches_dir"/*.patch)
-  shopt -u nullglob
-  if [[ ${#patches[@]} -eq 0 ]]; then
-    rm -rf "$work"
-    return 0
-  fi
-
-  for p in "${patches[@]}"; do
-    if ! patch -d "$work" -p1 --dry-run < "$p" >/dev/null 2>&1; then
-      log "[失败] 补丁无法应用: $(basename "$p") @ ${sha:0:12}"
-      patch -d "$work" -p1 --dry-run < "$p" 2>&1 | tail -20 || true
-      rm -rf "$work"
-      return 1
-    fi
-    # 顺序打上，保证后续补丁基于已改树
-    if ! patch -d "$work" -p1 < "$p" >/dev/null; then
-      log "[失败] 补丁实际应用失败: $(basename "$p") @ ${sha:0:12}"
-      rm -rf "$work"
-      return 1
-    fi
-  done
-
-  rm -rf "$work"
-  log "[补丁] ${pkg_dir}/patches 全部可通过 @ ${sha:0:12}"
-  return 0
-}
-
-# ---------- 策略: commit（跟踪分支 HEAD，写 PKG_SOURCE_VERSION + PKG_HASH）----------
-strategy_commit() {
-  local idx="$1"
-  local cfg="$CONFIG_FILE"
-
-  local name makefile repo ref
-  name=$(cfg_get "$cfg" ".packages[$idx].name")
-  makefile=$(cfg_get "$cfg" ".packages[$idx].makefile" "${name}/Makefile")
-  repo=$(cfg_get "$cfg" ".packages[$idx].repo")
-  ref=$(cfg_get "$cfg" ".packages[$idx].ref" "main")
-
-  [[ -f "$makefile" ]] || { log "[失败] 找不到 Makefile: ${makefile}"; return 1; }
-  [[ -n "$repo" ]] || { log "[失败] ${name} 缺少 repo"; return 1; }
-
-  local ver_var hash_var src_ver_var src_tpl reset_release verify_patches
-  ver_var=$(cfg_get "$cfg" ".packages[$idx].version_var" "PKG_VERSION")
-  hash_var=$(cfg_get "$cfg" ".packages[$idx].hash_var" "PKG_HASH")
-  src_ver_var=$(cfg_get "$cfg" ".packages[$idx].source_version_var" "PKG_SOURCE_VERSION")
-  src_tpl=$(cfg_get "$cfg" ".packages[$idx].source_url" \
-    'https://codeload.github.com/${REPO}/tar.gz/${TAG}?')
-  reset_release=$(cfg_get "$cfg" ".packages[$idx].reset_release_on_change" "true")
-  verify_patches=$(cfg_get "$cfg" ".packages[$idx].verify_patches" "false")
-
-  # 1) 取分支最新 commit
-  local info sha
-  if ! info=$(gh_api "https://api.github.com/repos/${repo}/commits/${ref}" 2>/dev/null); then
-    log "[失败] ${name}: 无法读取 ${repo}@${ref}"
-    return 1
-  fi
-  sha=$(printf '%s' "$info" | jq -r '.sha // empty')
-  [[ -n "$sha" && "$sha" != "null" ]] || {
-    log "[失败] ${name}: 空 commit sha"
-    return 1
-  }
-
-  local cur_sha
-  cur_sha=$(read_var_line "$makefile" "$src_ver_var")
-  if [[ "$FORCE" != "true" && -n "$cur_sha" && "$cur_sha" == "$sha" ]]; then
-    log "[commit] ${name} 已是最新 ${sha:0:12}，跳过"
-    LAST_ACTION="skipped"
-    return 0
-  fi
-
-  # 2) 下载并算 hash（TAG 占位用完整 sha）
-  local url
-  url=$(expand_tpl "$src_tpl" "$repo" "$sha" "$sha" "")
-  log "[commit] ${name}: ${ref} → ${sha:0:12}"
-  log "[commit] 下载 ${url}"
-
-  local hs sha256 size
-  if ! hs=$(download_and_hash "$url"); then
-    log "[失败] 下载失败: ${url}"
-    return 1
-  fi
-  sha256="${hs%%$'\t'*}"; size="${hs#*$'\t'}"
-  log "[commit] ${hash_var}=${sha256}  ($(human_size "$size"))"
-
-  # PKG_VERSION 用 UTC 日期，便于观察
-  local pkg_ver
-  pkg_ver=$(date -u '+%Y%m%d')
-
-  # 3) 可选：试打补丁（失败则不改 Makefile，只告警）
-  if [[ "$verify_patches" == "true" ]]; then
-    if ! verify_package_patches "$makefile" "$repo" "$sha"; then
-      if [[ "$DRY_RUN" != "true" ]]; then
-        notify "⚠️ 补丁需手修: ${name}" "$(cat <<EOF
-包名: ${name}
-仓库: ${repo}
-新 commit: ${sha}
-本地: ${cur_sha:-<无>}
-
-patches/ 无法干净应用到新源码，已跳过自动改 Makefile。
-请本地重做冲突补丁后再同步。
-EOF
-)"
-      fi
-      LAST_ACTION="skipped"
-      return 0
-    fi
-  fi
-
-  if [[ "$DRY_RUN" == "true" ]]; then
-    log "[dry-run] ${makefile} → ${src_ver_var}=${sha}, ${hash_var}=${sha256}, ${ver_var}=${pkg_ver}"
-    LAST_ACTION="updated"
-    return 0
-  fi
-
-  replace_var_line "$makefile" "$src_ver_var" "$sha"
-  replace_var_line "$makefile" "$hash_var" "$sha256"
-  replace_var_line "$makefile" "$ver_var" "$pkg_ver"
-  if [[ "$reset_release" == "true" ]] && has_var_line "$makefile" "PKG_RELEASE"; then
-    replace_var_line "$makefile" "PKG_RELEASE" "1"
-  fi
-  log "[commit] 已更新 ${makefile}"
-
-  write_state "${STATE_DIR}/pkg-${name}.json" "$(jq -n \
-    --arg name "$name" --arg repo "$repo" --arg ref "$ref" --arg sha "$sha" \
-    --arg version "$pkg_ver" --arg hash "$sha256" --arg url "$url" \
-    --arg strategy "commit" --arg updated_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '{name:$name,repo:$repo,ref:$ref,sha:$sha,version:$version,hash:$hash,source_url:$url,strategy:$strategy,updated_at:$updated_at}')"
-
-  notify "🚀 新 commit: ${repo} ${sha:0:12}" "$(cat <<EOF
-包名: ${name}
-仓库: ${repo}@${ref}
-commit: ${sha}
-PKG_VERSION: ${pkg_ver}
-大小: $(human_size "$size")
-时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-
-下载: ${url}
-
-PKG_HASH:
-${sha256}
-EOF
-)"
-
-  LAST_ACTION="updated"
-  return 0
-}
-
 # ---------- 策略 3: notify（只提醒，不自动改）----------
 strategy_notify() {
   local idx="$1"
@@ -1239,7 +1061,6 @@ process_package() {
   case "$strategy" in
     tarball) strategy_tarball "$idx" ;;
     assets)  strategy_assets  "$idx" ;;
-    commit)  strategy_commit  "$idx" ;;
     notify)  strategy_notify  "$idx" ;;
     *)       log "[失败] ${name} 未知策略: ${strategy}"; return 1 ;;
   esac
