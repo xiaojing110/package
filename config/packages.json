@@ -618,12 +618,16 @@
     {
       "name": "axonhub",
       "makefile": "axonhub/Makefile",
-      "strategy": "notify",
-      "note": "commit 型（PKG_SOURCE_VERSION + codeload tar.gz），上游以 tag 发布，需手工跟进",
+      "strategy": "commit",
       "repo": "looplj/axonhub",
-      "source": "tag",
-      "include_prerelease": false,
-      "tag_prefix": ""
+      "ref": "main",
+      "source_url": "https://codeload.github.com/${REPO}/tar.gz/${TAG}?",
+      "version_var": "PKG_VERSION",
+      "hash_var": "PKG_HASH",
+      "source_version_var": "PKG_SOURCE_VERSION",
+      "reset_release_on_change": true,
+      "verify_patches": true,
+      "note": "commit 型：跟踪 main HEAD，自动写 PKG_SOURCE_VERSION/PKG_HASH/PKG_VERSION；补丁失败只告警不改 Makefile"
     },
     {
       "name": "gecoosac",
