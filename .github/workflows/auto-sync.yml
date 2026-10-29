@@ -31,6 +31,7 @@ on:
       - "config/**"
       - "update.sh"
       - "lib/**"
+      - ".github/workflows/auto-sync.yml"
 
 permissions:
   contents: write
@@ -76,6 +77,118 @@ jobs:
           echo "update.sh 退出码: $rc"
           exit $rc
 
+      # ──────────────────────────────────────────────────────────────
+      # AxonHub 本地定制保护
+      #
+      # config/packages.json 里的 vikingyfy-packages 源是“整目录同步”：
+      # update.sh 会先 rm -rf 上游的 axonhub/、luci-app-axonhub/ 再 cp -a，
+      # 于是本地对下面两处文件的定制每次同步都会被上游版本覆盖：
+      #
+      #   1. axonhub/Makefile —— FE_STORAGE_POLICY + Build/Prepare 规则
+      #      （前端源码 CRLF 归一化 + 把“历史清理”默认值改成一天）
+      #   2. axonhub/patches/170-default-history-cleanup-to-one-day.patch
+      #      —— 只改 Go 侧默认值（前端部分由上面的 Makefile 负责）
+      #
+      # 这里在提交前把这两份本地定制取回来，仅让上游的版本元数据
+      # （PKG_VERSION / PKG_RELEASE / PKG_SOURCE_VERSION / PKG_HASH）生效。
+      # 上游若在这两处有其它改动，会打 ::warning:: 提示人工复核。
+      # ──────────────────────────────────────────────────────────────
+      - name: Preserve local AxonHub customizations
+        run: |
+          set -eu
+
+          MF=axonhub/Makefile
+          PATCH=axonhub/patches/170-default-history-cleanup-to-one-day.patch
+          BLOCK_MARK='# Upstream frontend sources use CRLF'
+
+          if ! git cat-file -e "HEAD:$MF" 2>/dev/null; then
+            echo "HEAD 中没有 $MF，跳过本地定制保护"
+            exit 0
+          fi
+
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+
+          # 1) 本次同步进来的上游版本（版本元数据 / 上游 170 补丁）
+          if [ -f "$MF" ]; then cp "$MF" "$tmp/upstream.mk"; else : > "$tmp/upstream.mk"; fi
+          if [ -f "$PATCH" ]; then cp "$PATCH" "$tmp/upstream.patch"; else : > "$tmp/upstream.patch"; fi
+
+          # 2) HEAD 里的本地定制版本
+          git show "HEAD:$MF" > "$tmp/local.mk"
+          if git cat-file -e "HEAD:$PATCH" 2>/dev/null; then
+            git show "HEAD:$PATCH" > "$tmp/local.patch"
+          else
+            : > "$tmp/local.patch"
+          fi
+
+          # 3) 版本元数据以本次同步到的上游 Makefile 为准
+          for var in PKG_VERSION PKG_RELEASE PKG_SOURCE_VERSION PKG_HASH; do
+            up=$(sed -nE "s/^${var}:=//p" "$tmp/upstream.mk" | head -n1)
+            [ -n "$up" ] || continue
+            if grep -qE "^${var}:=" "$tmp/local.mk"; then
+              sed -i -E "s|^${var}:=.*|${var}:=${up}|" "$tmp/local.mk"
+            else
+              printf '%s:=%s\n' "$var" "$up" >> "$tmp/local.mk"
+            fi
+          done
+
+          # 4) 自检：本地规则必须还在，否则失败，绝不静默丢定制
+          if ! grep -qF "$BLOCK_MARK" "$tmp/local.mk"; then
+            echo "::error::$MF 里找不到本地前端清理规则（$BLOCK_MARK），已中止"
+            exit 1
+          fi
+
+          # 5) 落盘：本地 Makefile + 本地 170 补丁
+          #    内容没变就不写，避免无意义的 mtime / 行尾抖动被 git status 当成变更
+          file_hash() { git hash-object -- "$1" 2>/dev/null || echo "-"; }
+          stdin_hash() { git hash-object --stdin < "$1"; }
+          if [ "$(file_hash "$MF")" != "$(stdin_hash "$tmp/local.mk")" ]; then
+            cp "$tmp/local.mk" "$MF"
+          fi
+          if [ -s "$tmp/local.patch" ] && \
+             [ "$(file_hash "$PATCH")" != "$(stdin_hash "$tmp/local.patch")" ]; then
+            cp "$tmp/local.patch" "$PATCH"
+          fi
+
+          # 6) 补丁头的 Base-Commit 跟随当前锁定的源码版本
+          src_ver=$(sed -nE 's/^PKG_SOURCE_VERSION:=//p' "$MF" | head -n1)
+          cur_base=$(sed -nE 's/^Base-Commit: ?//p' "$PATCH" | head -n1)
+          if [ -n "$src_ver" ] && grep -q '^Base-Commit:' "$PATCH" && [ "$cur_base" != "$src_ver" ]; then
+            sed -i -E "s|^Base-Commit:.*|Base-Commit: ${src_ver}|" "$PATCH"
+          fi
+
+          # 7) 上游 Makefile 若在本地定制块之外还有改动 → 提示人工复核
+          #    （去掉定制块后应与上游逐行一致，忽略空行）
+          awk '
+            /^# Upstream frontend sources use CRLF/ { skip = 1 }
+            skip && /^endef[[:space:]]*$/ { skip = 0; next }
+            !skip { print }
+          ' "$MF" > "$tmp/local-stripped.mk"
+          grep -vE '^[[:space:]]*$' "$tmp/upstream.mk" > "$tmp/up.norm" || :
+          grep -vE '^[[:space:]]*$' "$tmp/local-stripped.mk" > "$tmp/local.norm" || :
+          if [ -s "$tmp/upstream.mk" ] && ! diff -q "$tmp/up.norm" "$tmp/local.norm" >/dev/null; then
+            echo "::warning::上游 axonhub/Makefile 有本地定制块以外的改动，已保留本地版本，请人工复核"
+            diff -u "$tmp/up.norm" "$tmp/local.norm" | head -60 || :
+          fi
+
+          # 8) 上游 170 补丁的 Go 侧若与本地区分 → 提示人工复核
+          #    只比较实际改动行（±），忽略 hunk 头/上下文/文件头，
+          #    否则上游补丁的上下文差异会造成每次同步都误报。
+          go_changes() {
+            sed -n '/^--- a\/internal\/server\/biz\/system_default.go/,$p' "$1" \
+              | sed -e '/^--- /d' -e '/^+++ /d' -e '/^@@/d' \
+              | grep -E '^[+-]' || :
+          }
+          go_changes "$tmp/upstream.patch" > "$tmp/up.changes"
+          go_changes "$tmp/local.patch" > "$tmp/local.changes"
+          if [ -s "$tmp/upstream.patch" ] && ! diff -q "$tmp/up.changes" "$tmp/local.changes" >/dev/null; then
+            echo "::warning::上游 170 补丁的实际改动与本地区分，已保留本地版本，请人工复核"
+            diff -u "$tmp/up.changes" "$tmp/local.changes" | head -60 || :
+          fi
+
+          echo "已恢复本地 axonhub/Makefile 规则与 170 补丁；版本元数据取自上游："
+          grep -E '^(PKG_VERSION|PKG_RELEASE|PKG_SOURCE_VERSION|PKG_HASH):=' "$MF"
+
       - name: Detect changes
         id: changes
         run: |
@@ -118,5 +231,8 @@ jobs:
 
             - **上游源码**：`luci-app-passwall` / `luci-app-passwall2` / `openwrt-passwall-packages`
             - **依赖版本**：`PKG_VERSION` / `PKG_HASH`（含多架构预编译资源逐个校验）
+            - **AxonHub 本地定制**：`axonhub/Makefile`（前端 CRLF 归一化 + 一天保留默认值）
+              与 `patches/170-default-history-cleanup-to-one-day.patch` 保持本地版本，
+              仅跟随上游更新 `PKG_VERSION` / `PKG_RELEASE` / `PKG_SOURCE_VERSION` / `PKG_HASH`
 
             包目录均在仓库根目录，可直接当 OpenWrt feed 拉取。
