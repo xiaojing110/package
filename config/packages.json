@@ -151,20 +151,6 @@
         "RELEASE.md",
         "RELEASE_ZH.md"
       ]
-    },
-    {
-      "name": "daeuniverse-honk",
-      "repo": "daeuniverse/openwrt-packages",
-      "ref": "main",
-      "dirs": [
-        "honk",
-        "luci-app-honk",
-        "luci-lib-daeuniverse",
-        "vmlinux-btf",
-        "vmlinux-btf-builtin"
-      ],
-      "target": ".",
-      "skip_if_not_newer": false
     }
   ],
   "packages": [
@@ -751,40 +737,6 @@
       "makefile": "luci-theme-argon/Makefile",
       "strategy": "notify",
       "note": "luci.mk 型，由 jerrykuku/luci-theme-argon 源码同步维护"
-    },
-    {
-      "name": "honk",
-      "makefile": "honk/Makefile",
-      "strategy": "notify",
-      "repo": "daeuniverse/honk",
-      "source": "tag",
-      "include_prerelease": true,
-      "tag_prefix": "v",
-      "note": "Rust + eBPF 交叉编译；源码 honk/src 由构建流程按 tag v0.1.0-beta.4 检出，由 daeuniverse/openwrt-packages 同步维护"
-    },
-    {
-      "name": "luci-lib-daeuniverse",
-      "makefile": "luci-lib-daeuniverse/Makefile",
-      "strategy": "notify",
-      "note": "luci.mk 型（无源码下载），由 daeuniverse/openwrt-packages 源码同步维护"
-    },
-    {
-      "name": "luci-app-honk",
-      "makefile": "luci-app-honk/Makefile",
-      "strategy": "notify",
-      "note": "luci.mk 型（无源码下载），由 daeuniverse/openwrt-packages 源码同步维护"
-    },
-    {
-      "name": "vmlinux-btf",
-      "makefile": "vmlinux-btf/Makefile",
-      "strategy": "notify",
-      "note": "打包预生成的 BTF blob（VMLINUX_BTF_SRC），由 daeuniverse/openwrt-packages 源码同步维护"
-    },
-    {
-      "name": "vmlinux-btf-builtin",
-      "makefile": "vmlinux-btf-builtin/Makefile",
-      "strategy": "notify",
-      "note": "空包，PROVIDES @vmlinux-btf，由 daeuniverse/openwrt-packages 源码同步维护"
     }
   ]
 }

@@ -51,15 +51,12 @@ on:
           - luci-app-eqosplus
           - luci-app-gecoosac
           - luci-app-homeproxy
-          - luci-app-honk
           - luci-app-mosdns
           - luci-app-nikki
           - luci-app-passwall
           - luci-app-passwall2
           - luci-app-wolultra
-          - luci-lib-daeuniverse
           - luci-theme-material3
-          - honk
           - microsocks
           - mihomo-meta
           - mosdns
@@ -72,8 +69,6 @@ on:
           - tcping
           - v2ray-geodata
           - v2ray-plugin
-          - vmlinux-btf
-          - vmlinux-btf-builtin
           - xray-core
           - xray-plugin
           - dae-box
@@ -91,7 +86,6 @@ on:
           - nikki
           - mosdns
           - theme
-          - honk
           - custom
 
       packages:
@@ -102,7 +96,7 @@ on:
       exclude:
         description: "默认不编译的包（空格/逗号分隔）。在 plugin 下拉里点名、或 custom 里写包名时不受此限"
         type: string
-        default: "axonhub luci-app-axonhub dae-box luci-app-dae-box smartdns vmlinux-btf"
+        default: "axonhub luci-app-axonhub dae-box luci-app-dae-box smartdns"
 
       upload_all:
         description: "上传全部产物（含 -dbg / -dev），否则只上传主包"
@@ -191,8 +185,6 @@ jobs:
                 LIST="luci-app-nikki nikki mihomo-meta" ;;
               mosdns)
                 LIST="luci-app-mosdns mosdns geo2txt" ;;
-              honk)
-                LIST="luci-app-honk luci-lib-daeuniverse honk vmlinux-btf-builtin" ;;
               custom)
                 LIST=$(echo "${CUSTOM_PKGS:-}" | tr ',' ' ')
                 SKIP_EXCLUDE="yes"
@@ -334,49 +326,6 @@ jobs:
             fi
           done
 
-          # ---- honk：Rust 交叉编译（stable + eBPF nightly）+ bpf-linker + cmake/libclang ----
-          if echo " $LIST " | grep -qE '[[:space:]]honk[[:space:]]'; then
-            echo "→ 检测到 honk：准备 Rust 工具链"
-            sudo apt-get install -y -qq clang llvm libclang-dev cmake pkg-config >/dev/null 2>&1 || true
-
-            HONK_SRC=honk/src
-            if [ ! -d "$HONK_SRC" ]; then
-              HONK_TAG=$(sed -nE 's/^[[:space:]]*HONK_GIT_TAG:=\$\(if \$\(HONK_GIT_TAG\),\$\(HONK_GIT_TAG\),([^)]*)\).*/\1/p' honk/Makefile | head -1)
-              HONK_TAG=${HONK_TAG:-v0.1.0-beta.4}
-              echo "→ 检出 honk 源码 $HONK_TAG → $HONK_SRC"
-              git clone --depth 1 --branch "$HONK_TAG" \
-                https://github.com/daeuniverse/honk "$HONK_SRC"
-            fi
-
-            STABLE=$(grep -oP '^channel\s*=\s*"\K[^"]+' "$HONK_SRC/rust-toolchain.toml")
-            EBPF=$(grep -oP '^channel\s*=\s*"\K[^"]+' "$HONK_SRC/crates/honk-ebpf/rust-toolchain.toml")
-            echo "→ Rust stable=$STABLE  ebpf=$EBPF"
-
-            export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-            export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
-            export PATH="$CARGO_HOME/bin:$PATH"
-            if ! command -v rustup >/dev/null 2>&1; then
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-                | sh -s -- -y --no-modify-path --default-toolchain none
-            fi
-            rustup toolchain install "$STABLE" --profile minimal
-            rustup target add x86_64-unknown-linux-musl --toolchain "$STABLE" || true
-            rustup toolchain install "$EBPF" --profile minimal \
-              --component rust-src --component llvm-tools
-            echo "PATH=$CARGO_HOME/bin:\$PATH" >> "$GITHUB_PATH"
-            echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
-            echo "RUSTUP_HOME=$RUSTUP_HOME" >> "$GITHUB_ENV"
-
-            # 预编译 bpf-linker（eBPF 对象链接器），版本与校验取自 honk 的 pins
-            ( set -a; . "$HONK_SRC/.github/ci/pins.env"; set +a
-              curl -fsSL --retry 3 -o /tmp/bpf-linker.tar.zst \
-                "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
-              echo "${BPF_LINKER_SHA256}  /tmp/bpf-linker.tar.zst" | sha256sum -c -
-              zstd -dc /tmp/bpf-linker.tar.zst | tar -xf - -C "$CARGO_HOME/bin"
-              "$CARGO_HOME/bin/bpf-linker" --version
-            )
-          fi
-
       - name: Resolve SDK
         run: |
           set -euo pipefail
@@ -516,17 +465,6 @@ jobs:
 
           rm -rf "$TMP"
           echo "→ golang 替换完成（snapshot 会跳过本步骤）"
-
-      - name: Checkout honk sources
-        run: |
-          set -euo pipefail
-          if grep -qx 'honk' pkglist.txt 2>/dev/null && [ ! -d honk/src ]; then
-            HONK_TAG=$(sed -nE 's/^[[:space:]]*HONK_GIT_TAG:=\$\(if \$\(HONK_GIT_TAG\),\$\(HONK_GIT_TAG\),([^)]*)\).*/\1/p' honk/Makefile | head -1)
-            HONK_TAG=${HONK_TAG:-v0.1.0-beta.4}
-            echo "→ 检出 honk 源码 $HONK_TAG"
-            git clone --depth 1 --branch "$HONK_TAG" https://github.com/daeuniverse/honk honk/src
-          fi
-          ls -d honk/src 2>/dev/null || echo "（本次不编 honk，跳过源码检出）"
 
       - name: Inject packages into SDK
         run: |
