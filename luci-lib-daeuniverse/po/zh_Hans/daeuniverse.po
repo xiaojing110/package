@@ -1,0 +1,163 @@
+msgid ""
+msgstr ""
+"Language: zh_Hans\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "(new)"
+msgstr "（新文件）"
+
+msgid "Configuration file"
+msgstr "配置文件"
+
+msgid "Configuration is invalid, the service was not reloaded"
+msgstr "配置有误，服务未重新加载"
+
+msgid "Unable to read %s: %s"
+msgstr "无法读取 %s：%s"
+
+msgid "dae and honk cannot run at the same time; enabling %s turns %s off."
+msgstr "dae 和 honk 不能同时运行，启用 %s 会关闭 %s。"
+
+msgid "Edit the configuration file and every file it includes; each tab is saved to its own file."
+msgstr "编辑配置文件及其 include 的所有文件，每个标签页保存到各自的文件。"
+
+msgid "Enable"
+msgstr "启用"
+
+msgid "Log"
+msgstr "日志"
+
+msgid "Must be a file in %s"
+msgstr "必须是 %s 中的文件"
+
+msgid "No log entries."
+msgstr "暂无日志。"
+
+msgid "Not running"
+msgstr "未运行"
+
+msgid "Re-read includes"
+msgstr "重新解析 include"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Save files"
+msgstr "保存文件"
+
+msgid "Saved"
+msgstr "已保存"
+
+msgid "Saved, but the service could not be reloaded: %s"
+msgstr "已保存，但无法重新加载服务：%s"
+
+msgid "Saved, the service is reloading"
+msgstr "已保存，服务正在重新加载"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Unable to save: %s"
+msgstr "保存失败：%s"
+
+msgid "Service status"
+msgstr "服务状态"
+
+msgid "Configuration"
+msgstr "配置"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Web interface"
+msgstr "网页界面"
+
+msgid "Open doona"
+msgstr "打开 doona"
+
+msgid "doona listens on %s; open it through an SSH tunnel:"
+msgstr "doona 监听 %s；请通过 SSH 隧道访问："
+
+msgid "To open it from the LAN instead, set %s and restart honk."
+msgstr "如需从局域网直接打开，请设置 %s 并重启 honk。"
+
+msgid "honk only accepts IP addresses; open LuCI by IP address."
+msgstr "honk 仅接受 IP 地址；请使用 IP 地址打开 LuCI。"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "Checking for updates…"
+msgstr "正在检查更新…"
+
+msgid "Up to date"
+msgstr "已是最新版本"
+
+msgid "Upgrade"
+msgstr "升级"
+
+msgid "Select the packages to upgrade:"
+msgstr "选择要升级的软件包："
+
+msgid "Upgrading restarts the service and interrupts connections for a few seconds. Continue?"
+msgstr "升级将重启服务，连接将中断数秒。是否继续？"
+
+msgid "Upgrading…"
+msgstr "正在升级…"
+
+msgid "Upgrade complete."
+msgstr "升级完成。"
+
+msgid "apk exited with code %s."
+msgstr "apk 执行失败，退出码为 %s。"
+
+msgid "To use this feed's version, run %s; other packages can be added to the same command."
+msgstr "如需改用本软件源的版本，请执行 %s；其他软件包可加入同一条命令。"
+
+msgid "Unable to read version: %s"
+msgstr "无法读取版本：%s"
+
+msgid "Not installed"
+msgstr "未安装"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Package index update failed; using available indexes."
+msgstr "软件包索引更新失败；将使用可用的索引。"
+
+msgid "An upgrade is already running."
+msgstr "已有升级任务正在运行。"
+
+msgid "These packages were not upgraded: %s"
+msgstr "以下软件包未升级：%s"
+
+msgid "Waiting for the package manager to reconnect…"
+msgstr "正在等待软件包管理器重新连接…"
+
+msgid "Unable to read upgrade status. The job may still be running; reload to reconnect."
+msgstr "无法读取升级状态。任务可能仍在运行；请重新加载页面以恢复连接。"
+
+msgid "Enable the doona web UI"
+msgstr "启用 doona 网页界面"
+
+msgid "Unchecked, honk runs without the native API and doona. Saving restarts honk."
+msgstr "取消勾选后，honk 只运行核心，不启用 native API 与 doona。保存时会重新启动 honk。"
+
+msgid "Saved, the service is restarting"
+msgstr "已保存，服务正在重新启动"
+
+msgid "Saved, but the service could not be restarted: %s"
+msgstr "已保存，但无法重新启动服务：%s"
+
+msgid "Save or discard the unsaved changes of %s first"
+msgstr "请先保存或放弃 %s 尚未保存的编辑"

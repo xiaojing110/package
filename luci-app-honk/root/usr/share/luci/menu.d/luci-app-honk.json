@@ -1,0 +1,14 @@
+{
+	"admin/services/honk": {
+		"title": "honk",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "honk/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-honk" ],
+			"uci": { "honk": true }
+		}
+	}
+}

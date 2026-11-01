@@ -18,3 +18,6 @@ build-result.txt
 build-logs/
 artifacts/
 sdk/
+
+# honk 上游源码（构建时按 tag 检出，不进仓库）
+honk/src/
