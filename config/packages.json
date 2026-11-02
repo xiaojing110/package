@@ -762,7 +762,7 @@
       "source": "release",
       "include_prerelease": false,
       "tag_prefix": "v",
-      "note": "源码不随 feed 分发：由 tools/srcpin.py 按 config/src-pins.env 拉到 dae/src，版本经 DAE_VERSION 传入"
+      "note": "源码不随 feed 分发：需事先在 dae/src 检出上游源码（见 README），版本由 DAE_VERSION 传入"
     },
     {
       "name": "honk",
@@ -772,7 +772,7 @@
       "source": "release",
       "include_prerelease": true,
       "tag_prefix": "v",
-      "note": "源码不随 feed 分发：由 tools/srcpin.py 按 config/src-pins.env 拉到 honk/src；HONK_GIT_TAG 记上游 tag"
+      "note": "源码不随 feed 分发：需事先在 honk/src 检出上游源码；PKG_VERSION 派生，HONK_GIT_TAG 记上游 tag"
     },
     {
       "name": "luci-lib-daeuniverse",

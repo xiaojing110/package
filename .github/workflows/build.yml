@@ -107,10 +107,10 @@ on:
       # 默认跳过（只对批量 preset 生效，下拉点名 / custom 写包名不受限）
       #   axonhub / luci-app-axonhub        —— 前端要 Node.js + pnpm，很慢
       #   dae-box / luci-app-dae-box / smartdns —— git 型源码，编译慢
-      #   dae / honk / luci-app-dae / luci-app-honk
-      #     —— 源码不随 feed 分发：构建前按 config/src-pins.env 拉上游源码（自动），
-      #        dae 要 Go 全量编译、honk 要 Rust 两套工具链 + bpf-linker + doona，很慢
-      #   vmlinux-btf —— 需要上游 CI 生成的 BTF blob（VMLINUX_BTF_SRC），本仓库不产出
+      #   dae / honk / luci-app-dae / luci-app-honk / vmlinux-btf
+      #     —— 来自 daeuniverse/openwrt-packages：Makefile 期望 <包>/src 里已检出上游源码，
+      #        vmlinux-btf 还要预编译 BTF blob（VMLINUX_BTF_SRC）。本仓库只同步 feed 元数据，
+      #        未做源码外挂，直接编会在 Build/Prepare 报“source tree is missing”。
       exclude:
         description: "默认不编译的包（空格/逗号分隔）。在 plugin 下拉里点名、或 custom 里写包名时不受此限"
         type: string
@@ -546,90 +546,6 @@ jobs:
           echo "→ package/ 下已注入:"
           find package -maxdepth 1 -mindepth 1 -type d | sort | sed 's/^/  /'
 
-      # ---- dae / honk：外挂上游源码 ----
-      # daeuniverse/openwrt-packages 只发 feed 元数据，dae / honk 的 Makefile 期望
-      # <包>/src 里已有源码（由上游 CI 检出，不进 git）。这里按 config/src-pins.env
-      # 的 pin（tools/srcpin.py pin 由 auto-sync 维护）把原作者仓库浅克隆进来。
-      - name: Provision dae / honk sources
-        run: |
-          set -uo pipefail
-          LIST=" $(cat pkglist.txt 2>/dev/null || true) "
-          NEED=""
-          case "$LIST" in *" dae "*) NEED="$NEED dae" ;; esac
-          case "$LIST" in *" honk "*) NEED="$NEED honk" ;; esac
-          # luci-app-dae / luci-app-honk 依赖 dae / honk，编译时会被带出来
-          case "$LIST" in *" luci-app-dae "*) NEED="$NEED dae" ;; esac
-          case "$LIST" in *" luci-app-honk "*) NEED="$NEED honk" ;; esac
-          NEED=$(printf '%s\n' $NEED | sort -u | tr '\n' ',' | sed 's/,$//')
-          if [ -z "$NEED" ]; then
-            echo "→ 本次不编 dae / honk，不需要外挂源码"
-            exit 0
-          fi
-          echo "→ 需要外挂源码: $NEED（pin 见 config/src-pins.env）"
-          python3 tools/srcpin.py fetch --root sdk/package --only "$NEED" \
-            || { echo "::error::dae / honk 源码拉取失败"; exit 1; }
-
-      - name: Install dae / honk toolchains
-        run: |
-          set -uo pipefail
-          LIST=" $(cat pkglist.txt 2>/dev/null || true) "
-          need_dae=no
-          need_honk=no
-          case "$LIST" in *" dae "*|*" luci-app-dae "*) need_dae=yes ;; esac
-          case "$LIST" in *" honk "*|*" luci-app-honk "*) need_honk=yes ;; esac
-          if [ "$need_dae" = no ] && [ "$need_honk" = no ]; then
-            echo "→ 不需要 Go / Rust"
-            exit 0
-          fi
-
-          # 工具链版本跟着 pin 走（dae 的 go.mod、honk 的 .github/ci/pins.env）
-          DAE_GO_VERSION=$(sed -n 's/^DAE_GO_VERSION=//p' config/src-pins.env 2>/dev/null)
-          BPF_LINKER_VERSION=$(sed -n 's/^BPF_LINKER_VERSION=//p' config/src-pins.env 2>/dev/null)
-
-          if [ "$need_dae" = yes ]; then
-            sudo apt-get install -y -qq clang llvm
-            echo "→ 安装 Go ${DAE_GO_VERSION}（dae 的 go.mod 要求）"
-            if [ -n "$DAE_GO_VERSION" ]; then
-              curl -sSL --retry 3 --retry-delay 5 -o /tmp/go.tgz \
-                "https://go.dev/dl/go${DAE_GO_VERSION}.linux-amd64.tar.gz"
-              sudo rm -rf /usr/local/go
-              sudo tar -C /usr/local -xzf /tmp/go.tgz
-              rm -f /tmp/go.tgz
-              echo "/usr/local/go/bin" >> "$GITHUB_PATH"
-              /usr/local/go/bin/go version
-            else
-              echo "::warning::config/src-pins.env 里没有 DAE_GO_VERSION，跳过 Go（构建可能失败）"
-            fi
-          fi
-
-          if [ "$need_honk" = yes ]; then
-            sudo apt-get install -y -qq clang cmake pkg-config libclang-dev
-            if ! command -v rustup >/dev/null 2>&1; then
-              echo "→ 安装 rustup（honk 的 rust-toolchain.toml 决定具体两套工具链）"
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-                | sh -s -- -y --profile minimal --default-toolchain stable
-            fi
-            . "$HOME/.cargo/env"
-            # cargo 一进到有 rust-toolchain.toml 的目录就会自动装那套工具链
-            ( cd sdk/package/honk/src && cargo --version ) || true
-            ( cd sdk/package/honk/src/crates/honk-ebpf && cargo --version ) || true
-            echo "→ 安装 bpf-linker ${BPF_LINKER_VERSION}（预编译版，省掉 cargo install）"
-            if [ -n "$BPF_LINKER_VERSION" ]; then
-              curl -sSL --retry 3 --retry-delay 5 -o /tmp/bpf-linker.tar.zst \
-                "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/bpf-linker-x86_64-unknown-linux-musl.tar.zst"
-              mkdir -p /tmp/bl && tar --zstd -xf /tmp/bpf-linker.tar.zst -C /tmp/bl
-              sudo install -m755 "$(find /tmp/bl -name bpf-linker -type f | sed -n 1p)" /usr/local/bin/
-              rm -rf /tmp/bl /tmp/bpf-linker.tar.zst
-              /usr/local/bin/bpf-linker --version || true
-            else
-              echo "::warning::config/src-pins.env 里没有 BPF_LINKER_VERSION，跳过 bpf-linker"
-            fi
-          fi
-
-          echo "→ 工具链概况："
-          command -v go >/dev/null 2>&1 && go version || true
-          command -v cargo >/dev/null 2>&1 && cargo --version || true
-
       - name: Build
         run: |
           set -uo pipefail
@@ -691,17 +607,10 @@ jobs:
             LOG="../build-logs/$p.log"
             TGT="$p"
 
-            # dae / honk 依赖 vmlinux-btf，而 BTF blob 要上游 CI 用 SDK 内核头 + pahole 生成，
-            # 本仓库不产出。编它们时把这个依赖关掉（与上游 CI 的做法一致）。
-            EXTRA=""
-            case "$p" in
-              dae|honk|luci-app-dae|luci-app-honk) EXTRA="CONFIG_PACKAGE_vmlinux-btf=" ;;
-            esac
-
             # make 的 target 用的是 build target 名，通常是目录名；
             # 但少数包 PK_NAME 与目录不一致（如 xray-core 目录 vs PKG_NAME=Xray-core），
             # 拿到 "No rule to make target" 时改用 PKG_NAME 重试。
-            if make "package/$TGT/compile" $EXTRA -j"$(nproc)" V=s > "$LOG" 2>&1; then
+            if make "package/$TGT/compile" -j"$(nproc)" V=s > "$LOG" 2>&1; then
               echo "✅ $p"
               echo "ok   $p" >> ../build-result.txt
               continue
@@ -717,7 +626,7 @@ jobs:
                && grep -q 'No rule to make target' "$LOG"; then
               echo " ↳ 目录名没命中，改用 PKG_NAME=$PKGNAME 重试"
               TGT="$PKGNAME"
-              if make "package/$TGT/compile" $EXTRA -j"$(nproc)" V=s >> "$LOG" 2>&1; then
+              if make "package/$TGT/compile" -j"$(nproc)" V=s >> "$LOG" 2>&1; then
                 echo "✅ $p (as $PKGNAME)"
                 echo "ok   $p" >> ../build-result.txt
                 continue
@@ -726,7 +635,7 @@ jobs:
 
             # 自动补依赖后重试一次
             if auto_heal "$LOG"; then
-              if make "package/$TGT/compile" $EXTRA -j"$(nproc)" V=s >> "$LOG" 2>&1; then
+              if make "package/$TGT/compile" -j"$(nproc)" V=s >> "$LOG" 2>&1; then
                 echo "✅ $p（自动补依赖后）"
                 echo "ok   $p" >> ../build-result.txt
                 continue

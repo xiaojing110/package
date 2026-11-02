@@ -28,8 +28,7 @@ your-repo/                        ← 仓库根目录 = 一个 OpenWrt package f
 ├── xray-core/  sing-box/  ...    # │
 ├── chinadns-ng/  naiveproxy/ ... # ┘
 ├── update.sh  config/  lib/      #   同步工具（无 Makefile，OpenWrt 自动忽略）
-├── config/src-pins.env           #   dae / honk 外挂源码的 pin（见下文）
-├── tools/  test/  .github/  README.md
+├── test/  .github/  README.md
 └── .state/                       # 运行状态（已 .gitignore）
 ```
 
@@ -92,10 +91,6 @@ bash update.sh --force        # 忽略缓存与版本闸门，强制重新拉取
 bash update.sh --only xray-core
 bash update.sh --sync-source  # 只同步上游源码
 bash update.sh --skip-source  # 只更新版本哈希
-
-# dae / honk 的外挂源码（上游 feed 只发元数据，源码按 pin 拉）
-python3 tools/srcpin.py pin    # 更新 config/src-pins.env（auto-sync 每 2h 会自动跑）
-python3 tools/srcpin.py fetch  # 按 pin 把 dae/src、honk/src 拉下来
 ```
 
 ---
@@ -192,46 +187,28 @@ python3 tools/srcpin.py fetch  # 按 pin 把 dae/src、honk/src 拉下来
 > `vmlinux-btf/` `vmlinux-btf-builtin/` 这 7 个目录；`docs/` `scripts/` `keys/` **不搬**，
 > 上游的 `src/`（给 BTF 用的 C 桩，不是 OpenWrt 包）也不搬。
 >
-
-**源码怎么来：pin + 按 pin 拉**（思路照 [`kenzok8/openwrt-honk`](https://github.com/kenzok8/openwrt-honk)，
-但只钉**原作者**仓库 `daeuniverse/dae` / `daeuniverse/honk`，不掺二改）：
-
-| 文件 / 命令 | 作用 |
-|---|---|
-| `config/src-pins.env` | 上游 `REPO` / `TAG` / `VERSION` / `COMMIT`，外加工具链版本（`DAE_GO_VERSION`、`BPF_LINKER_VERSION`） |
-| `python3 tools/srcpin.py pin` | 读本地 Makefile 里 `PKG_VERSION` / `HONK_GIT_TAG` 的默认值 → 解析上游 commit → 写 pin。`auto-sync.yml` 每 2 小时跑一次，上游抬版本自动跟进 |
-| `python3 tools/srcpin.py fetch` | 按 pin 浅克隆到 `<包>/src`（dae 带 submodule），并用 `*_COMMIT` 校验 tag 没被上游挪动 |
-| `python3 tools/srcpin.py fetch --only dae --root sdk/package` | CI 里的用法（`build.yml` 已接好，不用手敲） |
+> **本仓库默认不编译它们**（见下文 `exclude`）—— 直接 `make` 会在 `Build/Prepare` 报
+> `source tree is missing`。要编就先按 Makefile 里的默认版本检出源码：
 
 ```sh
-python3 tools/srcpin.py fetch          # 拉 dae/src + honk/src
-python3 tools/srcpin.py fetch --only dae --force   # 重拉
-python3 tools/srcpin.py pin --dry-run  # 看看上游版本变了没（只读）
+# dae：PKG_VERSION 默认 2.1.1
+cd dae && git clone --recurse-submodules --branch v2.1.1 \
+           https://github.com/daeuniverse/dae src
+
+# honk：PKG_VERSION 默认 0.1.0_beta4 ↔ 上游 tag v0.1.0-beta.4（HONK_GIT_TAG 默认值）
+cd honk && git clone --branch v0.1.0-beta.4 \
+            https://github.com/daeuniverse/honk src
 ```
 
-> `update.sh` 同步这个源时会 `rm -rf` 整个包目录再重拷，`*/src` 也会被删掉 ——
-> 不用管：重跑一次 `srcpin.py fetch` 就按 pin 回来了（这两个路径都在 `.gitignore` 里，不会误提交）。
-
-**CI 里点名就能编了**：`build.yml` 在注入包之后会 ① 按 pin `srcpin.py fetch` 拉源码、
-② 装 pin 里的 Go / rustup + `bpf-linker`、③ 编 `dae`/`honk` 时关掉 `vmlinux-btf` 依赖
-（`CONFIG_PACKAGE_vmlinux-btf=`，与上游 CI 一致）。只是**慢**（honk 要 Rust 全量 + 嵌 doona），
-所以仍在默认 `exclude` 里，点名才编：Actions → Build Packages → `plugin` 选 `dae` / `honk`。
-
-本地编的话，`fetch` 之后按 pin 装工具链即可：
-
-```sh
-# pin 里的版本号
-grep -E '^(DAE_GO_VERSION|BPF_LINKER_VERSION)=' config/src-pins.env
-
-# dae  → 装 DAE_GO_VERSION 版本的 Go（https://go.dev/dl/，别用 apt 的老版本）
-# honk → rustup + honk/src 里两套 rust-toolchain.toml 指定的工具链，
-#        再加 BPF_LINKER_VERSION 的预编译 bpf-linker：
-#        https://github.com/aya-rs/bpf-linker/releases (x86_64-unknown-linux-musl)
-```
-
-> 版本也可以临时覆盖：`make package/dae/compile DAE_VERSION=…`、
-> `make package/honk/compile HONK_VERSION=… HONK_GIT_TAG=…`；
-> 正规做法是改 `config/src-pins.env`，或者让 `srcpin.py pin` 自己更新。
+> ⚠️ `update.sh` 同步这个源时会**先 `rm -rf` 整个包目录再重拷**，所以 `dae/src`、`honk/src`
+> 会被一并删掉（这两个路径已写进 `.gitignore`，不会误提交）。想留一份长期源码就放在仓库外，
+> 每次编译前 `cp -a` 进来；或者直接 `git clone` 一次用完即弃。
+>
+> 版本可以用 make 变量覆盖，不必改 Makefile：
+> `make package/dae/compile DAE_VERSION=2.1.1`、
+> `make package/honk/compile HONK_VERSION=0.1.0_beta4 HONK_GIT_TAG=v0.1.0-beta.4`。
+> `honk` 还需要上游 pin 的 nightly 工具链与 `bpf-linker`（见其 `rust-toolchain.toml`、
+> `.github/ci/pins.env`），编译时间明显长于本仓库其它包。
 >
 > `vmlinux-btf` 需要 `VMLINUX_BTF_SRC=<BTF blob>`（上游 `build-vmlinux-btf.yml` 用 SDK 内核头
 > 加 `pahole` 生成，并按目标内核版本锁死依赖）；内核自带 BTF 的固件（ImmortalWrt）
@@ -484,9 +461,10 @@ dae  honk  luci-app-dae  luci-app-honk  vmlinux-btf
 >
 > * `axonhub` / `luci-app-axonhub` —— 前端要跑 Node.js + pnpm，很慢
 > * `dae-box` / `luci-app-dae-box` / `smartdns` —— git 型源码，编译慢
-> * `dae` / `honk` / `luci-app-dae` / `luci-app-honk` —— 源码不随 feed 分发：构建前会自动
->   `srcpin.py fetch` 拉上游源码、装 Go / Rust 工具链，**慢**（honk 要 Rust 全量 + 嵌 doona）
-> * `vmlinux-btf` —— 需要上游 CI 生成的 BTF blob（`VMLINUX_BTF_SRC`），本仓库不产出
+> * `dae` / `honk` / `luci-app-dae` / `luci-app-honk` / `vmlinux-btf` —— 来自
+>   `daeuniverse/openwrt-packages`，Makefile 期望 `<包>/src` 里已检出上游源码
+>   （`vmlinux-btf` 还要预编译 BTF blob）；本仓库只同步 feed 元数据，
+>   编之前先按上文 **dae / honk** 一节检出源码
 >
 > **只对批量 preset 生效** —— 你显式点名就不拦：
 > * 在 `plugin` 下拉里选中它们 → 照常编译
@@ -621,11 +599,7 @@ cp -a ../xray-core ../sing-box package/
 make defconfig
 make package/xray-core/compile -j$(nproc) V=s
 
-# 4. dae / honk 多两步：按 pin 拉源码 + 关掉 vmlinux-btf 依赖
-python3 ../tools/srcpin.py fetch --only dae --root package
-make package/dae/compile -j$(nproc) V=s CONFIG_PACKAGE_vmlinux-btf=
-
-# 5. 产物
+# 4. 产物
 ls bin/packages/*/*/*.ipk bin/packages/*/*/*.apk 2>/dev/null
 ```
 
