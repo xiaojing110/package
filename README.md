@@ -97,7 +97,7 @@ bash update.sh --skip-source  # 只更新版本哈希
 
 ## A. 上游源码同步（`sources`）
 
-已配置 5 个上游：
+已配置 12 个上游：
 
 | name | 上游 | 同步内容 |
 |---|---|---|
@@ -111,6 +111,7 @@ bash update.sh --skip-source  # 只更新版本哈希
 | `luci-app-eqosplus` | `sirpdboy/luci-app-eqosplus` | **整个仓库** → `luci-app-eqosplus/`（`as_package` 模式） |
 | `dae-box` | `hhCodingCat/dae-box` | `openwrt/dae-box` → **`dae-box/`**（`src=>dst` 改名） |
 | `luci-app-dae-box` | `hhCodingCat/luci-app-dae-box` | **整个仓库** → `luci-app-dae-box/`（`as_package` + `replace` 改名） |
+| `daeuniverse-packages` | `daeuniverse/openwrt-packages` | `dae/` `honk/` `luci-app-dae/` `luci-app-honk/` `luci-lib-daeuniverse/` `vmlinux-btf/` `vmlinux-btf-builtin/` |
 
 > ⚠️ **目录名必须和 `PKG_NAME` 一致**，否则本地编译会“找不到包”——
 > OpenWrt 是**按 `PKG_NAME` 注册**的（`luci.mk` 用它定义 `Package/$(PKG_NAME)`），
@@ -177,6 +178,44 @@ bash update.sh --skip-source  # 只更新版本哈希
   "exclude": [".github", "Readme.md", "imgs"]
 }
 ```
+
+### dae / honk（`daeuniverse-packages`）
+
+> 这个上游只提供 **feed 元数据**：`Makefile` / `build.sh` / `files/`（init + UCI）和 LuCI 页面。
+> `dae` / `honk` 的源码由上游 CI 检出到 `<包>/src`，`vmlinux-btf` 还要一份预编译的 BTF blob，
+> 所以 `sources` 只搬 `dae/` `honk/` `luci-app-dae/` `luci-app-honk/` `luci-lib-daeuniverse/`
+> `vmlinux-btf/` `vmlinux-btf-builtin/` 这 7 个目录；`docs/` `scripts/` `keys/` **不搬**，
+> 上游的 `src/`（给 BTF 用的 C 桩，不是 OpenWrt 包）也不搬。
+>
+> **本仓库默认不编译它们**（见下文 `exclude`）—— 直接 `make` 会在 `Build/Prepare` 报
+> `source tree is missing`。要编就先按 Makefile 里的默认版本检出源码：
+
+```sh
+# dae：PKG_VERSION 默认 2.1.1
+cd dae && git clone --recurse-submodules --branch v2.1.1 \
+           https://github.com/daeuniverse/dae src
+
+# honk：PKG_VERSION 默认 0.1.0_beta4 ↔ 上游 tag v0.1.0-beta.4（HONK_GIT_TAG 默认值）
+cd honk && git clone --branch v0.1.0-beta.4 \
+            https://github.com/daeuniverse/honk src
+```
+
+> ⚠️ `update.sh` 同步这个源时会**先 `rm -rf` 整个包目录再重拷**，所以 `dae/src`、`honk/src`
+> 会被一并删掉（这两个路径已写进 `.gitignore`，不会误提交）。想留一份长期源码就放在仓库外，
+> 每次编译前 `cp -a` 进来；或者直接 `git clone` 一次用完即弃。
+>
+> 版本可以用 make 变量覆盖，不必改 Makefile：
+> `make package/dae/compile DAE_VERSION=2.1.1`、
+> `make package/honk/compile HONK_VERSION=0.1.0_beta4 HONK_GIT_TAG=v0.1.0-beta.4`。
+> `honk` 还需要上游 pin 的 nightly 工具链与 `bpf-linker`（见其 `rust-toolchain.toml`、
+> `.github/ci/pins.env`），编译时间明显长于本仓库其它包。
+>
+> `vmlinux-btf` 需要 `VMLINUX_BTF_SRC=<BTF blob>`（上游 `build-vmlinux-btf.yml` 用 SDK 内核头
+> 加 `pahole` 生成，并按目标内核版本锁死依赖）；内核自带 BTF 的固件（ImmortalWrt）
+> 改用空包 `vmlinux-btf-builtin`，它 `PROVIDES:=@vmlinux-btf`。
+>
+> `luci-lib-daeuniverse` / `luci-app-dae` / `luci-app-honk` / `vmlinux-btf-builtin` 没有源码下载，
+> 可以直接编；但 `luci-app-*` 依赖 `dae` / `honk`，一样先要有那个 `src`。
 
 ---
 
@@ -268,8 +307,9 @@ bash update.sh --skip-source  # 只更新版本哈希
 
 ### 策略 3：`notify` —— 只提醒，不自动改
 
-用于**源码内嵌**（`dns2socks`、`shadowsocksr-libev`）或 **git-commit 型**
-（`simple-obfs` `tcping` `smartdns` `mihomo-meta` `axonhub`）
+用于**源码内嵌**（`dns2socks`、`shadowsocksr-libev`）、**git-commit 型**
+（`simple-obfs` `tcping` `smartdns` `mihomo-meta` `axonhub`）、
+**外挂源码 / 预编译 blob 型**（`dae` `honk` `vmlinux-btf`），
 以及 **`luci.mk` 型 LuCI 插件/主题**（`luci-app-*` / `luci-theme-*`，无 `PKG_HASH`）。
 `PKG_MIRROR_HASH` 是 OpenWrt 对 git 仓库打包后的镜像哈希，本地无法可靠复现，
 硬写会让构建失败，所以只做提醒。
@@ -393,9 +433,9 @@ export WXPUSHER_TOPIC_IDS="123,456"
 
 ### 选编译哪些插件
 
-**① `plugin` —— 下拉直接点名（35 项）**
+**① `plugin` —— 下拉直接点名（46 项）**
 
-下拉里是仓库内**全部 34 个插件** + `all`（默认）。选中某一个就只编它。
+下拉里是仓库内**全部 45 个插件** + `all`（默认）。选中某一个就只编它。
 
 **② `preset` —— `plugin=all` 时按组批量**
 
@@ -413,10 +453,18 @@ export WXPUSHER_TOPIC_IDS="123,456"
 **③ `exclude` —— 默认不编译的包**
 
 ```
-axonhub  luci-app-axonhub
+axonhub  luci-app-axonhub  dae-box  luci-app-dae-box  smartdns
+dae  honk  luci-app-dae  luci-app-honk  vmlinux-btf
 ```
 
-> 这 2 个默认跳过（`axonhub` / `luci-app-axonhub` 要跑 Node.js + pnpm 前端构建，很慢）。
+> 这些默认跳过：
+>
+> * `axonhub` / `luci-app-axonhub` —— 前端要跑 Node.js + pnpm，很慢
+> * `dae-box` / `luci-app-dae-box` / `smartdns` —— git 型源码，编译慢
+> * `dae` / `honk` / `luci-app-dae` / `luci-app-honk` / `vmlinux-btf` —— 来自
+>   `daeuniverse/openwrt-packages`，Makefile 期望 `<包>/src` 里已检出上游源码
+>   （`vmlinux-btf` 还要预编译 BTF blob）；本仓库只同步 feed 元数据，
+>   编之前先按上文 **dae / honk** 一节检出源码
 >
 > **只对批量 preset 生效** —— 你显式点名就不拦：
 > * 在 `plugin` 下拉里选中它们 → 照常编译

@@ -1,0 +1,100 @@
+#!/bin/sh /etc/rc.common
+#
+# OpenWrt procd init script for dae.
+#
+# UCI (/etc/config/dae):
+#
+#   config dae 'config'
+#       option enabled '0'
+#       option config_file '/etc/dae/config.dae'
+#
+# dae runs as root because its eBPF datapath attaches to the LAN/WAN
+# interfaces and creates the daens network namespace.
+
+USE_PROCD=1
+START=99
+STOP=01
+
+CONF="dae"
+PROG="/usr/bin/dae"
+
+start_service() {
+	config_load "$CONF"
+
+	local enabled
+	config_get_bool enabled "config" "enabled" 0
+	[ "$enabled" -eq 1 ] || return 1
+
+	# honk creates the same dae0 link pair and daens namespace and hooks the
+	# same interfaces, so the two never run at the same time. LuCI turns
+	# honk off when dae is turned on there; with both turned on by hand,
+	# the one started second refuses. A honk that is turned off is only
+	# on its way out (it takes a moment to detach), so it does not block;
+	# should it still hold the link pair, procd restarts dae shortly after.
+	if [ "$(uci -q get honk.config.enabled)" = 1 ] &&
+		ubus call service list '{"name":"honk"}' 2>/dev/null |
+		jsonfilter -q -e '@.honk.instances[*].running' | grep -q true; then
+		logger -t dae "honk is running; dae and honk cannot run at the same time, disable honk first"
+		return 1
+	fi
+
+	local config_file
+	config_get config_file "config" "config_file" "/etc/dae/config.dae"
+
+	if [ ! -r "$config_file" ]; then
+		logger -t dae "configuration file '$config_file' is missing or unreadable"
+		return 1
+	fi
+
+	# apk does not stop at the failed check of vmlinux-btf-builtin, so a kernel
+	# without BTF can still get here
+	if [ ! -e /sys/kernel/btf/vmlinux ] && [ ! -e "/usr/lib/debug/boot/vmlinux-$(uname -r)" ]; then
+		logger -t dae "the kernel has no BTF: add the kmods repository, then run 'apk update && apk upgrade vmlinux-btf-builtin'"
+		return 1
+	fi
+
+	# `validate` runs the same rule pipeline as `run` (alias resolution,
+	# geosite/geoip expansion, rule lowering) without touching the eBPF
+	# datapath, so a broken configuration fails before the running instance
+	# is replaced. Geo assets are resolved locally, never downloaded.
+	if ! "$PROG" validate -c "$config_file"; then
+		logger -t dae "configuration '$config_file' failed validation"
+		return 1
+	fi
+
+	procd_open_instance "$CONF"
+	procd_set_param command "$PROG" run --config "$config_file"
+	# dae budgets its flow tables from RLIMIT_NOFILE, so keep the hard limit high
+	procd_set_param limits core="unlimited" nofile="1000000 1000000"
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	# Also the reload trigger of /etc/config/dae. An instance that runs with the
+	# configured file only rereads it. Everything else goes through start,
+	# which procd turns into a start, a restart when the command line changed
+	# (another configuration file), or a stop when start_service adds no
+	# instance (turned off, or the other service runs). Unlike stop, that keeps
+	# the service and its triggers registered, so turning it on again works.
+	config_load "$CONF"
+
+	local enabled config_file
+	config_get_bool enabled "config" "enabled" 0
+	config_get config_file "config" "config_file" "/etc/dae/config.dae"
+	if [ "$enabled" -eq 1 ] && procd_running "$CONF" "$CONF" &&
+		ubus call service list "{\"name\":\"$CONF\"}" 2>/dev/null |
+		jsonfilter -q -e "@.$CONF.instances.$CONF.command[*]" | grep -qxF -- "$config_file"; then
+		# dae reloads on SIGUSR1 (what `dae reload` sends) and keeps established
+		# connections; it ignores SIGHUP.
+		procd_send_signal "$CONF" "$CONF" USR1
+	else
+		start
+	fi
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$CONF"
+}
