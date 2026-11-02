@@ -41,35 +41,24 @@ on:
           - all
           - axonhub
           - chinadns-ng
-          - dae
-          - dae-box
           - dns2socks
           - gecoosac
           - geo2txt
           - geoview
-          - honk
           - hysteria
           - ipt2socks
           - luci-app-axonhub
-          - luci-app-dae
-          - luci-app-dae-box
           - luci-app-eqosplus
           - luci-app-gecoosac
           - luci-app-homeproxy
-          - luci-app-honk
           - luci-app-mosdns
-          - luci-app-netdevices
           - luci-app-nikki
           - luci-app-passwall
           - luci-app-passwall2
-          - luci-app-upnp
           - luci-app-wolultra
-          - luci-lib-daeuniverse
-          - luci-theme-argon
           - luci-theme-material3
           - microsocks
           - mihomo-meta
-          - miniupnpd
           - mosdns
           - naiveproxy
           - nikki
@@ -80,10 +69,10 @@ on:
           - tcping
           - v2ray-geodata
           - v2ray-plugin
-          - vmlinux-btf
-          - vmlinux-btf-builtin
           - xray-core
           - xray-plugin
+          - dae-box
+          - luci-app-dae-box
 
       preset:
         description: "plugin=all 时按组编译"
@@ -104,17 +93,10 @@ on:
         type: string
         default: ""
 
-      # 默认跳过（只对批量 preset 生效，下拉点名 / custom 写包名不受限）
-      #   axonhub / luci-app-axonhub        —— 前端要 Node.js + pnpm，很慢
-      #   dae-box / luci-app-dae-box / smartdns —— git 型源码，编译慢
-      #   dae / honk / luci-app-dae / luci-app-honk / vmlinux-btf
-      #     —— 来自 daeuniverse/openwrt-packages：Makefile 期望 <包>/src 里已检出上游源码，
-      #        vmlinux-btf 还要预编译 BTF blob（VMLINUX_BTF_SRC）。本仓库只同步 feed 元数据，
-      #        未做源码外挂，直接编会在 Build/Prepare 报“source tree is missing”。
       exclude:
         description: "默认不编译的包（空格/逗号分隔）。在 plugin 下拉里点名、或 custom 里写包名时不受此限"
         type: string
-        default: "axonhub luci-app-axonhub dae-box luci-app-dae-box smartdns dae honk luci-app-dae luci-app-honk vmlinux-btf"
+        default: "axonhub luci-app-axonhub dae-box luci-app-dae-box smartdns"
 
       upload_all:
         description: "上传全部产物（含 -dbg / -dev），否则只上传主包"
