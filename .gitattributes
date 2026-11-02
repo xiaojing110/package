@@ -23,3 +23,7 @@
 *.gz binary
 *.tar binary
 *.7z binary
+
+# dae / honk 的源码 pin：CI 里的 shell 直接 `sed` 取值，行尾必须是 LF
+*.env text eol=lf
+*.py text eol=lf

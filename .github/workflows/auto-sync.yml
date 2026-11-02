@@ -78,6 +78,25 @@ jobs:
           exit $rc
 
       # ──────────────────────────────────────────────────────────────
+      # dae / honk 外挂源码 pin
+      #
+      # 这个上游（daeuniverse/openwrt-packages）只发 feed 元数据，源码在
+      # daeuniverse/dae、daeuniverse/honk。上面的 update.sh 同步完 Makefile 后，
+      # 这里按 Makefile 里的版本把上游 tag / commit 钉进 config/src-pins.env；
+      # 构建时 tools/srcpin.py fetch 按它把源码拉进 <包>/src。
+      # 上游抬版本 → 这里自动跟进（commit 用来校验 tag 没被上游挪动）。
+      # ──────────────────────────────────────────────────────────────
+      - name: Pin dae / honk upstream sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          python3 tools/srcpin.py pin \
+            || echo "::warning::srcpin 失败（保留原 pin，不阻塞本次同步）"
+          echo "—— config/src-pins.env ——"
+          cat config/src-pins.env 2>/dev/null || echo "(无)"
+
+      # ──────────────────────────────────────────────────────────────
       # AxonHub 本地定制保护
       #
       # config/packages.json 里的 vikingyfy-packages 源是“整目录同步”：
@@ -230,6 +249,8 @@ jobs:
             由 GitHub Actions 自动同步：
 
             - **上游源码**：`luci-app-passwall` / `luci-app-passwall2` / `openwrt-passwall-packages`
+            - **dae / honk 源码 pin**：`config/src-pins.env` 跟随上游 Makefile 的版本
+              （`daeuniverse/dae` / `daeuniverse/honk`，构建时 `tools/srcpin.py fetch` 按 pin 拉源码）
             - **依赖版本**：`PKG_VERSION` / `PKG_HASH`（含多架构预编译资源逐个校验）
             - **AxonHub 本地定制**：`axonhub/Makefile`（前端 CRLF 归一化 + 一天保留默认值）
               与 `patches/170-default-history-cleanup-to-one-day.patch` 保持本地版本，
