@@ -151,6 +151,22 @@
         "RELEASE.md",
         "RELEASE_ZH.md"
       ]
+    },
+    {
+      "name": "daeuniverse-packages",
+      "repo": "daeuniverse/openwrt-packages",
+      "ref": "main",
+      "dirs": [
+        "dae",
+        "honk",
+        "luci-app-dae",
+        "luci-app-honk",
+        "luci-lib-daeuniverse",
+        "vmlinux-btf",
+        "vmlinux-btf-builtin"
+      ],
+      "target": ".",
+      "skip_if_not_newer": false
     }
   ],
   "packages": [
@@ -737,6 +753,56 @@
       "makefile": "luci-theme-argon/Makefile",
       "strategy": "notify",
       "note": "luci.mk 型，由 jerrykuku/luci-theme-argon 源码同步维护"
+    },
+    {
+      "name": "dae",
+      "makefile": "dae/Makefile",
+      "strategy": "notify",
+      "repo": "daeuniverse/dae",
+      "source": "release",
+      "include_prerelease": false,
+      "tag_prefix": "v",
+      "note": "源码不随 feed 分发：需事先在 dae/src 检出上游源码（见 README），版本由 DAE_VERSION 传入"
+    },
+    {
+      "name": "honk",
+      "makefile": "honk/Makefile",
+      "strategy": "notify",
+      "repo": "daeuniverse/honk",
+      "source": "release",
+      "include_prerelease": true,
+      "tag_prefix": "v",
+      "note": "源码不随 feed 分发：需事先在 honk/src 检出上游源码；PKG_VERSION 派生，HONK_GIT_TAG 记上游 tag"
+    },
+    {
+      "name": "luci-lib-daeuniverse",
+      "makefile": "luci-lib-daeuniverse/Makefile",
+      "strategy": "notify",
+      "note": "luci.mk 型（无源码下载），由 daeuniverse-packages 源码同步维护"
+    },
+    {
+      "name": "luci-app-dae",
+      "makefile": "luci-app-dae/Makefile",
+      "strategy": "notify",
+      "note": "luci.mk 型（依赖 dae + luci-lib-daeuniverse），由 daeuniverse-packages 源码同步维护"
+    },
+    {
+      "name": "luci-app-honk",
+      "makefile": "luci-app-honk/Makefile",
+      "strategy": "notify",
+      "note": "luci.mk 型（依赖 honk + luci-lib-daeuniverse），由 daeuniverse-packages 源码同步维护"
+    },
+    {
+      "name": "vmlinux-btf",
+      "makefile": "vmlinux-btf/Makefile",
+      "strategy": "notify",
+      "note": "预编译 BTF blob 型（VMLINUX_BTF_SRC 由上游 CI 生成），跟随 OpenWrt 内核版本，仅登记"
+    },
+    {
+      "name": "vmlinux-btf-builtin",
+      "makefile": "vmlinux-btf-builtin/Makefile",
+      "strategy": "notify",
+      "note": "空包，为自带 BTF 的内核（ImmortalWrt）提供 vmlinux-btf 依赖"
     }
   ]
 }

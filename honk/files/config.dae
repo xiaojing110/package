@@ -1,0 +1,80 @@
+# Minimal OpenWrt configuration for honk-core, installed as
+# /etc/honk/config.dae.
+#
+# This file only provides a working skeleton: add your nodes or subscriptions
+# and routing rules before enabling the service, and adjust the interfaces for
+# the device. It intentionally routes everything directly so that enabling the
+# service does not break connectivity before a proxy is configured.
+#
+# Interfaces: br-lan is the default OpenWrt LAN bridge; `auto` follows the
+# interface of the IPv4 default route. Set lan_interface to your LAN device
+# list (comma separated) if it differs.
+#
+# Open http://<router LAN IP>:9527/ from the LAN, for example
+# http://192.168.1.1:9527/. Use the IP address: honk refuses host names such as
+# openwrt.lan. The page uses plain HTTP, like LuCI; the default firewall keeps
+# port 9527 closed on WAN. To keep it on the router only, listen on
+# 127.0.0.1:9527 and reach it with ssh -L 9527:127.0.0.1:9527 root@<router>.
+#
+# The first visit creates the administrator. Sign in to edit configuration.
+# For a reverse proxy, terminate TLS there; for token authentication, replace
+# password_auth with secret.
+
+global {
+    wan_interface: auto
+    lan_interface: br-lan
+    log_level: info
+    dial_mode: domain++
+    auto_config_kernel_parameter: true
+    data_dir: '/etc/honk/data'
+    # Empty: log to stdout, which procd forwards to syslog/logread.
+    log_file: ''
+    tcp_check_url: 'https://www.gstatic.com/generate_204'
+    tcp_check_http_method: HEAD
+    check_interval: 300s
+    bootstrap_resolver: '1.1.1.1:53'
+    # Hold ambiguous LAN UDP first packets through NFQUEUE. Requires the
+    # nfnetlink_queue and nft_queue kernel modules, which the package depends on.
+    nfqueue_enable: true
+}
+
+dns {
+    upstream {
+        # dnsmasq on the router; honk sends its own DNS lookups there.
+        local: 'udp://127.0.0.1:53'
+    }
+    routing {
+        request {
+            fallback: local
+        }
+        response {
+            fallback: local
+        }
+    }
+}
+
+routing {
+    # Start with everything direct; add proxy groups and rules above this
+    # fallback once nodes are configured.
+    fallback: direct
+}
+
+experimental {
+    # Clash-compatible API (optional; served on loopback only). The embedded
+    # doona UI uses the native API below.
+    clash_api {
+        external_controller: '127.0.0.1:9090'
+        default_mode: 'Rule'
+    }
+    native_api {
+        enabled: true
+        listen: '0.0.0.0:9527'
+        password_auth: true
+        config_write: true
+        ui: 'embedded'
+        # ui: 'embedded-lite'   # doona lite, honk v0.1.0-beta.4 and later
+    }
+    cache_file {
+        enabled: true
+    }
+}

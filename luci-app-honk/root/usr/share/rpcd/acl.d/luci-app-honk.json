@@ -1,0 +1,31 @@
+{
+	"luci-app-honk": {
+		"description": "Grant access to the honk configuration and log",
+		"read": {
+			"file": {
+				"/etc/honk": [ "list" ],
+				"/etc/honk/*": [ "list", "read" ],
+				"/usr/libexec/daeuniverse-pkg installed *": [ "exec" ],
+				"/usr/libexec/daeuniverse-pkg check *": [ "exec" ],
+				"/usr/libexec/daeuniverse-pkg status": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "list", "read", "exec" ],
+				"log": [ "read" ],
+				"service": [ "list" ]
+			},
+			"uci": [ "honk", "dae", "network" ]
+		},
+		"write": {
+			"file": {
+				"/etc/honk/*": [ "write" ],
+				"/usr/libexec/daeuniverse-pkg upgrade *": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "write", "exec" ],
+				"rc": [ "init" ]
+			},
+			"uci": [ "honk", "dae" ]
+		}
+	}
+}
