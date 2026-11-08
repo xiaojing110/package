@@ -8,7 +8,7 @@ instances. Keep explicit stored policy values unchanged.
 Frontend UI defaults are adjusted in the package Makefile (CRLF source
 cannot be reliably patched by OpenWrt's patch utility).
 
-Base-Commit: adee9c007289e5be870880ee3df81c5a4c6632ed
+Base-Commit: 4eebba5fbba09cf87e213ae2cfccc86f30432ea1
 
 ---
 
