@@ -214,6 +214,7 @@ bash update.sh --skip-source  # 只更新版本哈希
 | `source_url` | `https://codeload.github.com/${REPO}/tar.gz/${TAG}` | 下载地址模板 |
 | `reset_release_on_change` | `false` | 版本变化时把 `PKG_RELEASE` 归 1 |
 | `skip_if_not_newer` | `true` | 版本闸门 |
+| `verify_hash` | `false` | 版本没变也下载比对 `PKG_HASH`，不一致就修正；用于 Makefile 会被「源码同步」整体覆盖的包（如 `geo2txt`） |
 
 > ⚠️ `source_url` **必须和 Makefile 里 `PKG_SOURCE_URL` 的实际下载地址一致**，
 > 否则算出的 `PKG_HASH` 和 OpenWrt 校验值对不上。

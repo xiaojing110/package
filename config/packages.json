@@ -698,7 +698,9 @@
       "include_prerelease": false,
       "tag_prefix": "",
       "source_url": "https://codeload.github.com/sbwml/geo2txt/tar.gz/${VERSION}?",
-      "reset_release_on_change": false
+      "reset_release_on_change": false,
+      "verify_hash": true,
+      "note": "Makefile 由 mosdns 源码同步整体覆盖；上游改过 tag 或写错 PKG_HASH 又不涨版本时，由这里每次复算修正"
     },
     {
       "name": "luci-app-mosdns",

@@ -644,9 +644,13 @@ strategy_tarball() {
 
   # 版本/哈希写入哪两个变量（默认 PKG_VERSION / PKG_HASH）
   # 例：VIKINGYFY 的 sing-box 用 PKG_UPSTREAM_VERSION，PKG_VERSION 由 $(subst) 派生不能碰
-  local ver_var hash_var
+  local ver_var hash_var verify_hash
   ver_var=$(cfg_get "$cfg" ".packages[$idx].version_var" "PKG_VERSION")
   hash_var=$(cfg_get "$cfg" ".packages[$idx].hash_var" "PKG_HASH")
+  # 版本没变时是否仍下载比对校验值（默认 false）。
+  # 用于 Makefile 会被“源码同步”整体覆盖、上游写错 hash 后又不涨版本的包：
+  # 那种情况下版本闸门会一直跳过，错误的校验值永远修不掉。
+  verify_hash=$(cfg_get "$cfg" ".packages[$idx].verify_hash" "false")
 
   local cur_version cur_hash
   cur_version=$(read_var_line "$makefile" "$ver_var")
@@ -656,17 +660,22 @@ strategy_tarball() {
   log "[tarball] 当前 Makefile: ${ver_var}=${cur_version:-<空>}"
 
   if [[ "$FORCE" != "true" ]]; then
-    # 版本闸门：上游版本不高于本地 → 忽略同步（不降级、不重复拉取）
-    if should_skip_sync "$version" "$cur_version" "$(cfg_get "$cfg" ".packages[$idx].skip_if_not_newer" "true")"; then
-      log "[tarball] ${name} 上游版本 ${version} 不高于本地 ${cur_version}，忽略同步"
-      LAST_ACTION="skipped"
-      return 0
-    fi
-    # 同版本但本地缺哈希，仍需补算
-    if [[ "$cur_version" == "$version" && -n "$cur_hash" ]]; then
-      log "[tarball] ${name} 已是最新，跳过"
-      LAST_ACTION="skipped"
-      return 0
+    # verify_hash：版本没变也要重新下载比对校验值（见上方说明）
+    if [[ "$verify_hash" == "true" && -n "$cur_hash" && "$cur_version" == "$version" ]]; then
+      log "[tarball] ${name} 版本未变，按 verify_hash 复算校验值"
+    else
+      # 版本闸门：上游版本不高于本地 → 忽略同步（不降级、不重复拉取）
+      if should_skip_sync "$version" "$cur_version" "$(cfg_get "$cfg" ".packages[$idx].skip_if_not_newer" "true")"; then
+        log "[tarball] ${name} 上游版本 ${version} 不高于本地 ${cur_version}，忽略同步"
+        LAST_ACTION="skipped"
+        return 0
+      fi
+      # 同版本但本地缺哈希，仍需补算
+      if [[ "$cur_version" == "$version" && -n "$cur_hash" ]]; then
+        log "[tarball] ${name} 已是最新，跳过"
+        LAST_ACTION="skipped"
+        return 0
+      fi
     fi
   fi
 
@@ -682,6 +691,20 @@ strategy_tarball() {
   fi
   sha="${hs%%$'\t'*}"; size="${hs#*$'\t'}"
   log "[tarball] ${hash_var}=${sha}  ($(human_size "$size"))"
+
+  # 版本与校验值都没变 → 不写任何文件（verify_hash 的常态路径）
+  if [[ "$cur_version" == "$version" && "$cur_hash" == "$sha" && -z "$release" ]]; then
+    log "[tarball] ${name} 版本与校验值均无变化，跳过写入"
+    LAST_ACTION="skipped"
+    return 0
+  fi
+
+  # 版本没变但校验值对不上 → 本地记录的 hash 是错的（如上游改过 tag / 写错过），修正它
+  local fix_hash=false
+  if [[ "$cur_version" == "$version" && -n "$cur_hash" && "$cur_hash" != "$sha" ]]; then
+    fix_hash=true
+    log "[tarball] ${name} 校验值不一致，修正 ${cur_hash:0:12}… → ${sha:0:12}…"
+  fi
 
   if [[ "$DRY_RUN" == "true" ]]; then
     log "[dry-run] ${makefile} → ${ver_var}=${version}, ${hash_var}=${sha}"
@@ -704,7 +727,9 @@ strategy_tarball() {
     --arg updated_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '{name:$name,repo:$repo,tag:$tag,version:$version,hash:$hash,source_url:$url,strategy:$strategy,updated_at:$updated_at}')"
 
-  notify "🚀 新 Release: ${repo} ${tag}" "$(cat <<EOF
+  local notify_title="🚀 新 Release: ${repo} ${tag}"
+  [[ "$fix_hash" == "true" ]] && notify_title="🔧 校验值修正: ${repo} ${tag}"
+  notify "$notify_title" "$(cat <<EOF
 包名: ${name}
 仓库: ${repo}
 版本: ${tag}  →  ${ver_var}:=${version}
