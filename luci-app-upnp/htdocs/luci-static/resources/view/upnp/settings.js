@@ -3,7 +3,7 @@
 'require poll';
 'require uci';
 'require form';
-'require upnp';
+'require upnp.mappings as upnp';
 
 return view.extend({
 	load: function() {

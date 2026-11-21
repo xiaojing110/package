@@ -3,7 +3,7 @@
 		"title": "UPnP IGD & PCP",
 		"action": {
 			"type": "view",
-			"path": "upnp/upnp"
+			"path": "upnp/settings"
 		},
 		"depends": {
 			"acl": [ "luci-app-upnp" ],
