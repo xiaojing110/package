@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const test = require('node:test');
+const { setTimeout: delay } = require('node:timers/promises');
 
 function fixture(t, budget = '6') {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'argon-wallpaper-'));
@@ -19,6 +20,12 @@ function fixture(t, budget = '6') {
 printf '%s\\n' "$0 $*" >> "$REQUESTS"
 [ "$FETCH_MODE" != failure ] || exit 1
 [ "$FETCH_MODE" != hang ] || sleep 20
+if [ "$FETCH_MODE" = wait ]; then
+  while [ ! -f "$REQUESTS.release" ]; do sleep 0.03; done
+fi
+case "$FETCH_MODE:$4" in
+    primary-failure:https://www.bing.com/*) exit 1 ;;
+esac
 printf '%s' "$FETCH_PAYLOAD"
 `;
 	for (const name of ['wget-ssl', 'uclient-fetch'])
@@ -38,7 +45,8 @@ except (ValueError,KeyError,IndexError,TypeError):
 uci() {
   case "$*" in
     *online_wallpaper) printf '%s\\n' "$WALLPAPER_SOURCE" ;;
-    *use_api_key) printf '%s\\n' fixture-key ;;
+    *unsplash_api_key) printf '%s\\n' unsplash-fixture ;;
+    *wallhaven_api_key) printf '%s\\n' wallhaven-fixture ;;
     *use_exact_resolution) printf '1\\n' ;;
   esac
 }
@@ -53,13 +61,13 @@ json_cleanup() { :; }
 		.replace('CACHE="/var/run/argon_${WEB_PIC_SRC}.url"', `CACHE="${cache}"`)
 		.replace('WRLOCK="/var/lock/argon_${WEB_PIC_SRC}.lock"', `WRLOCK="${dir}/lock"`)
 		.replace('WGET=/usr/libexec/wget-ssl', `WGET="${ssl}"`)
-		.replace('timeout -k 1 6', `timeout -k 1 ${budget}`);
+		.replace('timeout -k 1 "${2:-6}"', `timeout -k 1 ${budget}`);
 	fs.writeFileSync(script, source);
 	return {
-		cache, ssl,
+		cache, ssl, release: () => fs.writeFileSync(requests + '.release', ''),
 		requests: () => fs.existsSync(requests) ? fs.readFileSync(requests, 'utf8').trim().split('\n') : [],
-		call(source = 'bing', body = { images: [{ url: '/th?id=Fixture_1920x1080.jpg' }] }, mode = '') {
-			return JSON.parse(execFileSync('sh', ['-c', 'ulimit -n 64; exec sh "$@"', 'sh', script, 'call', 'get_url'], {
+		call(source = 'bing', body = { images: [{ url: '/th?id=Fixture_1920x1080.jpg' }] }, mode = '', method = 'get_url') {
+			return JSON.parse(execFileSync('sh', ['-c', 'ulimit -n 64; exec sh "$@"', 'sh', script, 'call', method], {
 				input: '{}\n', encoding: 'utf8', timeout: 3000,
 				env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH,
 					REQUESTS: requests, WALLPAPER_SOURCE: source, FETCH_PAYLOAD: JSON.stringify(body), FETCH_MODE: mode }
@@ -70,7 +78,7 @@ json_cleanup() { :; }
 
 test('cold wallpaper requests use TLS despite a non-SSL wget, then reuse the cache', t => {
 	for (const [source, body, expected] of [
-		['bing', { images: [{ url: '/th?id=Fixture_1920x1080.jpg' }] }, 'https://www.bing.com/th?id=Fixture_UHD.jpg'],
+		['bing', { images: [{ url: '/th?id=Fixture_1920x1080.jpg' }] }, 'https://www.bing.com/th?id=Fixture_1920x1080.jpg'],
 		['unsplash', { urls: { regular: 'https://images.unsplash.com/fixture.jpg' } }, 'https://images.unsplash.com/fixture.jpg'],
 		['wallhaven', { data: [{ path: 'https://w.wallhaven.cc/full/fixture.jpg' }] }, 'https://w.wallhaven.cc/full/fixture.jpg']
 	]) {
@@ -87,21 +95,32 @@ test('cold wallpaper requests use TLS despite a non-SSL wget, then reuse the cac
 test('source deployments use uclient-fetch when the standalone TLS binary is absent', t => {
 	const f = fixture(t);
 	fs.unlinkSync(f.ssl);
-	assert.equal(f.call().url, 'https://www.bing.com/th?id=Fixture_UHD.jpg');
+	assert.equal(f.call().url, 'https://www.bing.com/th?id=Fixture_1920x1080.jpg');
 	assert.ok(f.requests().every(line => line.includes('/uclient-fetch ')));
+});
+
+test('Bing tries the regional endpoint if the primary endpoint fails', t => {
+	const f = fixture(t);
+	const path = '/th?id=Fixture_1920x1080.jpg&pid=hp';
+	assert.equal(f.call('bing', { images: [{ url: path }] }, 'primary-failure').url,
+		'https://cn.bing.com' + path);
+	assert.deepEqual(f.requests().map(line => new URL(line.split(' ').at(-1)).host),
+		['www.bing.com', 'cn.bing.com']);
+	assert.equal(f.call().url, 'https://cn.bing.com' + path);
+	assert.equal(f.requests().length, 2);
 });
 
 test('failed wallpaper fetches return a local fallback and retry after the cooldown', t => {
 	const f = fixture(t);
 	assert.deepEqual(f.call('bing', {}, 'failure'), { url: '' });
 	assert.equal(fs.readFileSync(f.cache, 'utf8'), '');
-	assert.equal(f.requests().length, 1);
+	assert.equal(f.requests().length, 2);
 	assert.deepEqual(f.call(), { url: '' });
-	assert.equal(f.requests().length, 1);
+	assert.equal(f.requests().length, 2);
 	const expired = new Date(Date.now() - 122000);
 	fs.utimesSync(f.cache, expired, expired);
-	assert.equal(f.call().url, 'https://www.bing.com/th?id=Fixture_UHD.jpg');
-	assert.equal(f.requests().length, 2);
+	assert.equal(f.call().url, 'https://www.bing.com/th?id=Fixture_1920x1080.jpg');
+	assert.equal(f.requests().length, 3);
 });
 
 test('a stalled downloader cannot hold the login wallpaper RPC indefinitely', t => {
@@ -110,4 +129,59 @@ test('a stalled downloader cannot hold the login wallpaper RPC indefinitely', t 
 	assert.deepEqual(f.call('bing', {}, 'hang'), { url: '' });
 	assert.ok(Date.now() - start < 2000);
 	assert.equal(fs.readFileSync(f.cache, 'utf8'), '');
+});
+
+async function until(predicate) {
+	for (let i = 0; i < 100; i++) {
+		if (predicate()) return;
+		await delay(30);
+	}
+	assert.fail('wallpaper worker did not reach the expected state');
+}
+
+test('page renders return immediately and share one refresh on cold and expired caches', async t => {
+	for (const stale of ['', 'https://www.bing.com/th?id=Previous.jpg']) {
+		const f = fixture(t);
+		if (stale) {
+			fs.writeFileSync(f.cache, stale + '\n');
+			fs.utimesSync(f.cache, 1, 1);
+		}
+		const read = () => f.call('bing', undefined, 'wait', 'get_cached_url').url;
+		try {
+			assert.equal(read(), stale);
+			await until(() => f.requests().length > 0);
+			assert.equal(read(), stale);
+			assert.equal(read(), stale);
+		} finally {
+			f.release();
+		}
+		const expected = 'https://www.bing.com/th?id=Fixture_1920x1080.jpg';
+		await until(() => fs.existsSync(f.cache) && fs.readFileSync(f.cache, 'utf8').trim() === expected);
+		assert.equal(read(), expected);
+		assert.equal(f.requests().length, 1);
+	}
+});
+
+test('failed background refresh retires the stale URL until a successful retry', async t => {
+	const f = fixture(t);
+	const stale = 'https://www.bing.com/th?id=Previous.jpg';
+	fs.writeFileSync(f.cache, stale + '\n');
+	fs.utimesSync(f.cache, 1, 1);
+	const read = () => f.call('bing', {}, 'failure', 'get_cached_url').url;
+	assert.equal(read(), stale);
+	await until(() => fs.readFileSync(f.cache, 'utf8') === '');
+	assert.equal(read(), '');
+	assert.equal(f.requests().length, 2);
+	fs.utimesSync(f.cache, 1, 1);
+	assert.equal(f.call().url, 'https://www.bing.com/th?id=Fixture_1920x1080.jpg');
+});
+
+test('each keyed wallpaper source uses only its own credential', t => {
+	for (const source of ['unsplash', 'unsplash_456', 'wallhaven_123', 'wallhaven']) {
+		const f = fixture(t);
+		f.call(source, {});
+		const api = new URL(f.requests()[0].split(' ').at(-1));
+		assert.equal(api.searchParams.get('client_id'), source.startsWith('unsplash') ? 'unsplash-fixture' : null);
+		assert.equal(api.searchParams.get('apikey'), source === 'wallhaven_123' ? 'wallhaven-fixture' : null);
+	}
 });
