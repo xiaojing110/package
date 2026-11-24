@@ -1,9 +1,9 @@
 'use strict';
 'require baseclass';
-'require upnp.mappings as upnp';
+'require upnp';
 
 return baseclass.extend({
-	title: _('Active UPnP IGD & PCP/NAT-PMP Port Maps'),
+	title: _('Active UPnP IGD & PCP/NAT-PMP IPv4 Port Mappings'),
 
 	load: function() {
 		return upnp.getStatus();

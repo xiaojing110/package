@@ -2,13 +2,12 @@ From: VIKINGYFY <viking.yfy@qq.com>
 Date: Tue, 24 Nov 2026 13:21:33 +0800
 Subject: [PATCH] responses: treat cyber policy refusal as a request error
 
-Keep a Responses policy refusal out of retry and model circuit-breaker
-failure accounting. Return a client error when the provider omits the
-status and preserve the provider code and description.
+Recognize the provider policy code in both raw HTTP errors and transformed
+stream errors. Keep these refusals out of retries and model circuit-breaker
+failure accounting while preserving the provider error details.
 
-Base-Commit: 2edb4c9ab9fcd83af79f11aa804eb7ff116d827a
+Base-Commit: c5795678840ee54ecdef8f03f9741650bd8ab302
 
----
 --- a/internal/server/orchestrator/model_circuit_breaker.go
 +++ b/internal/server/orchestrator/model_circuit_breaker.go
 @@ -86,7 +86,7 @@ func (m *modelCircuitBreakerTracker) OnO
@@ -30,7 +29,7 @@ Base-Commit: 2edb4c9ab9fcd83af79f11aa804eb7ff116d827a
  	"testing"
  
  	"github.com/stretchr/testify/require"
-@@ -114,6 +115,39 @@ func TestModelCircuitBreakerTracker_Skip
+@@ -114,6 +115,61 @@ func TestModelCircuitBreakerTracker_Skip
  	require.Equal(t, lastFailureBefore, after.LastFailureAt)
  }
  
@@ -49,22 +48,44 @@ Base-Commit: 2edb4c9ab9fcd83af79f11aa804eb7ff116d827a
 +		},
 +	}
 +	tracker := withModelCircuitBreaker(outbound, cb).(*modelCircuitBreakerTracker)
-+	tracker.OnOutboundRawError(ctx, &llm.ResponseError{StatusCode: http.StatusBadGateway})
++	tracker.OnOutboundRawError(ctx, &httpclient.Error{
++		StatusCode: http.StatusUnavailableForLegalReasons,
++		Body:       []byte(`{"error":{"code":"provider_unavailable","message":"cyber_policy is not the error code"}}`),
++	})
 +	before := cb.GetModelCircuitBreakerStats(ctx, 42, "gpt-4")
 +	require.Equal(t, 1, before.ConsecutiveFailures)
 +
-+	rejection := &llm.ResponseError{
-+		StatusCode: http.StatusBadGateway,
-+		Detail:     llm.ErrorDetail{Code: llm.ErrorCodeCyberPolicy, Type: "invalid_request"},
++	tests := []struct {
++		name string
++		err  error
++	}{
++		{
++			name: "stream failure",
++			err: &llm.ResponseError{
++				StatusCode: http.StatusBadRequest,
++				Detail:     llm.ErrorDetail{Code: llm.ErrorCodeCyberPolicy, Type: "invalid_request"},
++			},
++		},
++		{
++			name: "HTTP 451 from provider",
++			err: &httpclient.Error{
++				StatusCode: http.StatusUnavailableForLegalReasons,
++				Body:       []byte(`{"error":{"code":"cyber_policy","type":"invalid_request","message":"request rejected"}}`),
++			},
++		},
 +	}
-+	for range biz.DefaultModelCircuitBreakerPolicy().OpenThreshold {
-+		tracker.OnOutboundRawError(ctx, rejection)
-+	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			for range biz.DefaultModelCircuitBreakerPolicy().OpenThreshold {
++				tracker.OnOutboundRawError(ctx, tt.err)
++			}
 +
-+	after := cb.GetModelCircuitBreakerStats(ctx, 42, "gpt-4")
-+	require.Equal(t, biz.StateClosed, after.State)
-+	require.Equal(t, before.ConsecutiveFailures, after.ConsecutiveFailures)
-+	require.Equal(t, before.LastFailureAt, after.LastFailureAt)
++			after := cb.GetModelCircuitBreakerStats(ctx, 42, "gpt-4")
++			require.Equal(t, biz.StateClosed, after.State)
++			require.Equal(t, before.ConsecutiveFailures, after.ConsecutiveFailures)
++			require.Equal(t, before.LastFailureAt, after.LastFailureAt)
++		})
++	}
 +}
 +
  func TestModelCircuitBreakerTracker_NonCircuitBreakerSkipsStreamTracking(t *testing.T) {
@@ -72,17 +93,28 @@ Base-Commit: 2edb4c9ab9fcd83af79f11aa804eb7ff116d827a
  	ctx := context.Background()
 --- a/llm/model.go
 +++ b/llm/model.go
-@@ -1069,6 +1069,15 @@ func (e ResponseError) Error() string {
+@@ -1069,6 +1069,26 @@ func (e ResponseError) Error() string {
  	return sb.String()
  }
  
 +// ErrorCodeCyberPolicy identifies a request rejected by the upstream content policy.
 +const ErrorCodeCyberPolicy = "cyber_policy"
 +
-+// IsContentPolicyRejection reports whether an upstream response rejected this request.
++// IsContentPolicyRejection recognizes the upstream code in HTTP and stream errors.
 +func IsContentPolicyRejection(err error) bool {
-+	responseErr, ok := errors.AsType[*ResponseError](err)
-+	return ok && responseErr != nil && responseErr.Detail.Code == ErrorCodeCyberPolicy
++	if responseErr, ok := errors.AsType[*ResponseError](err); ok {
++		return responseErr != nil && responseErr.Detail.Code == ErrorCodeCyberPolicy
++	}
++
++	// Raw error middleware runs before the HTTP error is transformed.
++	httpErr, ok := errors.AsType[*httpclient.Error](err)
++	if !ok || httpErr == nil {
++		return false
++	}
++
++	var responseErr ResponseError
++	return json.Unmarshal(httpErr.Body, &responseErr) == nil &&
++		responseErr.Detail.Code == ErrorCodeCyberPolicy
 +}
 +
  // ErrorDetail represents error details.

@@ -89,7 +89,7 @@ return baseclass.extend({
 				E('th', { 'class': 'th left' }, _('Client Port')),
 				E('th', { 'class': 'th left' }, _('External Port')),
 				E('th', { 'class': 'th left' }, _('Protocol')),
-				E('th', { 'class': 'th left' }, _('Remaining Time', 'UPnP port mapping')),
+				E('th', { 'class': 'th left' }, _('Remaining Time')),
 				E('th', { 'class': 'th left' }, _('Description')),
 				E('th', { 'class': 'th left cbi-section-actions' }, '')
 			])
