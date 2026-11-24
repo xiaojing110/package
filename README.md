@@ -609,6 +609,28 @@ A：`sources` 里加一条即可：
 A：设置 `GITHUB_TOKEN`。Actions 已自动用 `secrets.GITHUB_TOKEN`，
 本地建议用 PAT（勾 `public_repo` 即可）。
 
+**Q：构建时报 `ERROR: unable to select packages: sing-box-…-r1: breaks: luci-app-homeproxy-…[sing-box>=…-r2]`？**
+
+A：这是**构建树里的包副本/缓存比仓库旧**的典型症状，不是依赖写错：
+
+* 仓库里 `sing-box` 已经是 `-r2`（含 `patches/110-homeproxy-dns-ipv6-by-outbound.patch`），
+  `luci-app-homeproxy` 要求 `sing-box (>=1.15.0_alpha13-r2)`；
+* 但构建机的 feed 副本可能还停在「homeproxy 已要求 r2、sing-box 还是 r1」的那次同步；
+* 而且 `luci-app-homeproxy` 的 `PKG_VERSION` 没变，旧的“要求 r2”的 `.apk` 会留在
+  `staging_dir/packages/*/`，只在 Makefile 里改依赖不会自动重打包。
+
+处理：
+
+```sh
+./scripts/feeds update -a && ./scripts/feeds install -a
+rm -f staging_dir/packages/*/sing-box-*.apk staging_dir/packages/*/luci-app-homeproxy-*.apk
+rm -rf build_dir/target-*/sing-box-*
+make package/sing-box/clean package/luci-app-homeproxy/clean
+make -j$(nproc)
+```
+
+`patches/110-…` 会改变包目录哈希，`feeds update` 之后 `sing-box` 必定重新编译出 `-r2`。
+
 **Q：能只跑一半吗？**
 A：`--sync-source` 只同步源码，`--skip-source` 只更新版本哈希，
 `--only <name>` 处理单项，`--force` 绕过缓存与版本闸门。
