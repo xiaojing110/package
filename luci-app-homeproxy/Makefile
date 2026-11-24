@@ -22,7 +22,7 @@ LUCI_DEPENDS:= \
 	+ucode-mod-digest \
 	+ucode-mod-math \
 	+ucode-mod-uloop
-LUCI_EXTRA_DEPENDS:=sing-box (>=1.15.0_alpha13-r2)
+LUCI_EXTRA_DEPENDS:=sing-box
 LUCI_PKGARCH:=all
 
 define Package/$(PKG_NAME)/conffiles
