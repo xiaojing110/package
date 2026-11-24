@@ -156,7 +156,7 @@ bash update.sh --skip-source  # 只更新版本哈希
 | `target` | `.` | 落地目录（`.` = 仓库根目录） |
 | `as_package` | `false` | **上游整棵树就是一个包**，全部落到 `target` 目录内（先清空再拷） |
 | `skip_if_not_newer` | `true` | **版本闸门**，见下 |
-| `version_vars` | `["PKG_VERSION","PKG_UPSTREAM_VERSION","GEOIP_VER","GEOSITE_VER"]` | 参与版本比较的变量 |
+| `version_vars` | `["PKG_VERSION","PKG_UPSTREAM_VERSION","PKG_RELEASE","GEOIP_VER","GEOSITE_VER"]` | 参与版本比较的变量 |
 
 **行为**：按 `ref` 拉上游 commit SHA，SHA 没变就跳过；变了才下载。
 
@@ -294,9 +294,11 @@ bash update.sh --skip-source  # 只更新版本哈希
 | 值是 `$(subst …)` 派生式 | ✅ 同步（无法比较则放行） |
 
 **多版本变量**（源码同步）：比较 `PKG_VERSION` / `PKG_UPSTREAM_VERSION` /
-`GEOIP_VER` / `GEOSITE_VER` 一组变量 —— **只要有一个上游严格更新就同步**，
+`PKG_RELEASE` / `GEOIP_VER` / `GEOSITE_VER` 一组变量 —— **只要有一个上游严格更新就同步**，
 全部不更高才忽略。这样 `v2ray-geodata`（靠 `GEOIP_VER`/`GEOSITE_VER` 版本化）
-也能正确判定。
+也能正确判定；上游「只重新打包」（版本号不变、补丁改了、仅抬 `PKG_RELEASE`）也不会被漏掉
+—— `sing-box` 加补丁重建就是这种情况，漏同步会让 `luci-app-homeproxy` 的
+`sing-box (>=…-r2)` 依赖直接装不上。
 
 * 想强制覆盖：`bash update.sh --force`
 * 想关掉某个包的闸门：配置里写 `"skip_if_not_newer": false`

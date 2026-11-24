@@ -296,6 +296,10 @@ should_skip_sync() {
 #     · 只要有一个上游值严格更新 → 同步
 #     · 所有可比变量都不更高 → 忽略
 #     · 一个可比的都没有 → 同步（无法判定时保守放行）
+#   PKG_RELEASE 单独处理：它只在 PKG_VERSION 相同时才算“更新”，否则上游
+#   `1.0.0-r5` 会把本地 `1.1.0-r1` 降级。主版本相同、只抬 release 的场景
+#   正是上游「重新打包 / 加补丁」（如 sing-box 加补丁后 r1 → r2），必须同步，
+#   否则依赖方（luci-app-homeproxy 要求 sing-box >= …-r2）会装不上。
 #   should_skip_source <上游Makefile> <本地Makefile> <gate> <变量列表,换行分隔>
 #   返回 0=应忽略  1=应同步
 should_skip_source() {
@@ -304,6 +308,7 @@ should_skip_source() {
   if [[ ! -f "$upfile" || ! -f "$locfile" ]]; then return 1; fi
 
   local compared=0 newer=0 v uv lv
+  local up_ver="" loc_ver="" up_rel="" loc_rel=""
   while IFS= read -r v; do
     [[ -z "$v" ]] && continue
     uv=$(read_var_line "$upfile" "$v")
@@ -311,12 +316,22 @@ should_skip_source() {
     # 只比较字面量版本号，跳过 $(...) / ${...} 派生式
     is_literal_ver "$uv" || continue
     is_literal_ver "$lv" || continue
+    if [[ "$v" == "PKG_RELEASE" ]]; then
+      up_rel="$uv"; loc_rel="$lv"
+      continue
+    fi
     compared=$((compared + 1))
+    if [[ "$v" == "PKG_VERSION" ]]; then up_ver="$uv"; loc_ver="$lv"; fi
     if is_newer "$uv" "$lv"; then newer=$((newer + 1)); fi
   done <<< "$vars"
 
-  if [[ "$compared" -eq 0 ]]; then return 1; fi
   if [[ "$newer" -gt 0 ]]; then return 1; fi
+  if [[ "$compared" -eq 0 ]]; then return 1; fi
+  # 主版本一致时，上游仅抬 PKG_RELEASE 也算更新（重新打包 / 加补丁）
+  if [[ -n "$up_rel" && -n "$loc_rel" && "$up_ver" == "$loc_ver" ]] \
+     && is_newer "$up_rel" "$loc_rel"; then
+    return 1
+  fi
   return 0
 }
 
@@ -471,7 +486,9 @@ sync_source() {
   # as_package=false：每个条目落到 target/<条目>
   local gate ver_vars
   gate=$(cfg_get "$cfg" ".sources[$idx].skip_if_not_newer" "true")
-  ver_vars=$(jq -r ".sources[$idx].version_vars // [\"PKG_VERSION\",\"PKG_UPSTREAM_VERSION\",\"GEOIP_VER\",\"GEOSITE_VER\"] | .[]" "$CONFIG_FILE" 2>/dev/null)
+  # PKG_RELEASE 也参与比较：上游“只重新打包”（改补丁 / 重编译）时版本号不变、
+  # 只抬 PKG_RELEASE，只有比到它才不会把这类更新静默丢掉（依赖方会因此对不上）。
+  ver_vars=$(jq -r ".sources[$idx].version_vars // [\"PKG_VERSION\",\"PKG_UPSTREAM_VERSION\",\"PKG_RELEASE\",\"GEOIP_VER\",\"GEOSITE_VER\"] | .[]" "$CONFIG_FILE" 2>/dev/null)
   local changed=0
   local copied=()
   local ignored=()
